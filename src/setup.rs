@@ -54,12 +54,12 @@ pub async fn problems(
             }
         }
 
-        if let Some(me) = &bot_member {
-            if !g.member_permissions(me).administrator() {
-                out.push(
-                    "I need **Administrator** → give my role it in Server Settings → Roles".into(),
-                );
-            }
+        if let Some(me) = &bot_member
+            && !g.member_permissions(me).administrator()
+        {
+            out.push(
+                "I need **Administrator** → give my role it in Server Settings → Roles".into(),
+            );
         }
     }
 
