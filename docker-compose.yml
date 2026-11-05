@@ -1,4 +1,4 @@
-# Runs on the Steam Machine. Watchtower pulls new images that CI pushes to GHCR.
+# Production setup. Watchtower pulls new images from GHCR and restarts the bot automatically.
 services:
   spiritbot:
     image: ghcr.io/sauce-2/spiritbot:latest
