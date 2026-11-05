@@ -1,11 +1,12 @@
 # Production setup. Watchtower pulls new images from GHCR and restarts the bot automatically.
+# Using rootless Podman? Set CONTAINER_SOCKET in .env (e.g. /run/user/1000/podman/podman.sock).
 services:
   spiritbot:
-    image: ghcr.io/sauce-2/spiritbot:latest
+    image: ghcr.io/sauce-2/spritbot-slop:latest
     env_file: .env
     volumes:
       - spiritbot-data:/data
-    restart: unless-stopped
+    restart: always
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
@@ -14,8 +15,8 @@ services:
     image: nickfedor/watchtower
     command: --label-enable --interval 120 --cleanup
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    restart: always
 
 volumes:
   spiritbot-data:

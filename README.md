@@ -52,7 +52,7 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 
 ### 2. Run it
 
-You need Docker with Compose. A prebuilt image is published at `ghcr.io/sauce-2/spiritbot:latest`.
+You need Docker with Compose. A prebuilt image is published at `ghcr.io/sauce-2/spritbot-slop:latest`.
 
 ```bash
 mkdir spiritbot && cd spiritbot
@@ -63,7 +63,9 @@ docker compose up -d
 ```
 
 The compose file includes [Watchtower](https://github.com/nicholas-fedor/watchtower), which keeps the
-bot updated automatically. Remove that service if you'd rather update by hand. Data is stored in
+bot updated automatically. Remove that service if you'd rather update by hand. If you use rootless
+Podman, set `CONTAINER_SOCKET` in `.env` to your Podman socket (for example
+`/run/user/1000/podman/podman.sock`). Data is stored in
 SQLite in the `spiritbot-data` volume, so it survives updates.
 
 ### 3. Configure
@@ -87,6 +89,7 @@ All settings are environment variables in `.env`:
 | `BOT_TZ` | Timezone that defines "today" for daily rules and schedules (default `Europe/London`) |
 | `DEV_GUILD_ID` | Register commands in one server only, so they update instantly. Leave empty in production |
 | `RUST_LOG` | Log level |
+| `CONTAINER_SOCKET` | Socket Watchtower uses to manage containers (default `/var/run/docker.sock`) |
 
 ## Development
 
