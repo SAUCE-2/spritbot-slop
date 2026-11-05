@@ -23,7 +23,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  # Only main gets an image; Watchtower on the Steam Machine pulls :latest.
+  # Only main publishes an image; Watchtower deployments pull :latest.
   publish:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

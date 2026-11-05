@@ -1,4 +1,5 @@
-# Runs on the Steam Machine under rootless Podman (deck user). Watchtower pulls new images that CI pushes to GHCR.
+# Production setup. Watchtower pulls new images from GHCR and restarts the bot automatically.
+# Using rootless Podman? Set CONTAINER_SOCKET in .env (e.g. /run/user/1000/podman/podman.sock).
 services:
   spiritbot:
     image: ghcr.io/sauce-2/spritbot-slop:latest
@@ -14,7 +15,7 @@ services:
     image: nickfedor/watchtower
     command: --label-enable --interval 120 --cleanup
     volumes:
-      - /run/user/1000/podman/podman.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     restart: always
 
 volumes:
