@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::ai::jev::Jev;
 use crate::config::Config;
@@ -26,6 +26,8 @@ pub struct Inner {
     /// None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
     pub jev: Option<Jev>,
     pub voice: VoiceListener,
+    /// When the process started, for `/status` uptime.
+    pub started_at: DateTime<Utc>,
 }
 
 impl Deref for Data {

@@ -55,6 +55,7 @@ async fn main() -> Result<()> {
         stt,
         jev,
         voice: Default::default(),
+        started_at: chrono::Utc::now(),
     });
 
     let framework = poise::Framework::builder()

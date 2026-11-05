@@ -40,6 +40,7 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
+| `/status` | Bot uptime, gateway latency, memory, and rule/punishment stats |
 
 ## Self-hosting
 
