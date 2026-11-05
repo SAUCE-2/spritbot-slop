@@ -22,6 +22,7 @@ offender's messages and disconnects them from VC until the timeout ends.
 |---|---|
 | `first_message` | Your first message each day must be festive (default: 5m timeout) |
 | `vc_greeting` | When you join VC, you have 10 seconds to say something festive (default: disconnect) |
+| `sign_off` | Every message must end with a Christmas greeting (default: 1m timeout) |
 
 More are on the way. See [Adding a rule](#adding-a-rule) to write your own.
 

@@ -1,6 +1,7 @@
 //! Rules: each daily rule is one file implementing [`Rule`], listed in [`registry`].
 
 mod first_message;
+mod sign_off;
 mod vc_greeting;
 
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub fn registry() -> Vec<Arc<dyn Rule>> {
     vec![
         Arc::new(first_message::FirstMessage),
         Arc::new(vc_greeting::VcGreeting),
+        Arc::new(sign_off::SignOff),
     ]
 }
 
