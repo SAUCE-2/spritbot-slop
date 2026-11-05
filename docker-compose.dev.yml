@@ -1,0 +1,16 @@
+# Local testing: builds from source instead of pulling from GHCR.
+#   docker compose -f docker-compose.dev.yml up -d --build
+name: spiritbot-dev
+
+services:
+  spiritbot:
+    build: .
+    image: spiritbot-dev
+    container_name: spiritbot-dev
+    env_file: .env
+    volumes:
+      - data:/data
+
+volumes:
+  data:
+    name: spiritbot-dev-data

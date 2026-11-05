@@ -1,0 +1,21 @@
+# Runs on the Steam Machine. Watchtower pulls new images that CI pushes to GHCR.
+services:
+  spiritbot:
+    image: ghcr.io/sauce-2/spiritbot:latest
+    env_file: .env
+    volumes:
+      - spiritbot-data:/data
+    restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  watchtower:
+    # Maintained fork (containrrr/watchtower is archived and breaks on Docker 29+).
+    image: nickfedor/watchtower
+    command: --label-enable --interval 120 --cleanup
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  spiritbot-data:
