@@ -58,7 +58,7 @@ or `./dev.sh cargo clippy`.
 
 ## Deploying to the Steam Machine
 
-CI builds `ghcr.io/sauce-2/spiritbot:latest` on every push to `main`. After the first push, open the
+CI builds `ghcr.io/sauce-2/spritbot-slop:latest` on every push to `main`. After the first push, open the
 package on GitHub and set its visibility to **public**, so the machine can pull it without logging in.
 
 On the Steam Machine:

@@ -1,11 +1,11 @@
-# Runs on the Steam Machine. Watchtower pulls new images that CI pushes to GHCR.
+# Runs on the Steam Machine under rootless Podman (deck user). Watchtower pulls new images that CI pushes to GHCR.
 services:
   spiritbot:
-    image: ghcr.io/sauce-2/spiritbot:latest
+    image: ghcr.io/sauce-2/spritbot-slop:latest
     env_file: .env
     volumes:
       - spiritbot-data:/data
-    restart: unless-stopped
+    restart: always
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
@@ -14,8 +14,8 @@ services:
     image: nickfedor/watchtower
     command: --label-enable --interval 120 --cleanup
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
+      - /run/user/1000/podman/podman.sock:/var/run/docker.sock
+    restart: always
 
 volumes:
   spiritbot-data:
