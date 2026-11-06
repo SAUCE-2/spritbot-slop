@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::ai::jev::Jev;
+use crate::ai::Judge;
 use crate::config::Config;
 use crate::db::Db;
 use crate::rules::Rule;
@@ -23,8 +23,8 @@ pub struct Inner {
     pub rules: Vec<Arc<dyn Rule>>,
     /// None if the Whisper model couldn't be loaded; voice rules then fail the setup check.
     pub stt: Option<Stt>,
-    /// None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
-    pub jev: Option<Jev>,
+    /// Jev, or None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
+    pub judge: Option<Arc<dyn Judge>>,
     pub voice: VoiceListener,
     /// When the process started, for `/status` uptime.
     pub started_at: DateTime<Utc>,

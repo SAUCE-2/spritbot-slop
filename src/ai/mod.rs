@@ -3,11 +3,40 @@
 
 pub mod jev;
 
+use anyhow::Result;
+use async_trait::async_trait;
 use poise::serenity_prelude::Message;
 use serde_json::{Value, json};
 
 use crate::app::Data;
-use jev::{Image, normalize_image, noul};
+use jev::{Answers, Image, Jev, Question, normalize_image, noul};
+
+/// A yes/no answer (noul) at or above this counts as "yes". The one place it's decided.
+pub const YES: f32 = 0.5;
+
+/// Answers named questions about some `state` (plus images it references) in one request.
+/// [`Jev`] in production; a fake in tests.
+#[async_trait]
+pub trait Judge: Send + Sync {
+    async fn ask(
+        &self,
+        state: Value,
+        questions: Vec<(&'static str, Question)>,
+        images: Vec<Image>,
+    ) -> Result<Answers>;
+}
+
+#[async_trait]
+impl Judge for Jev {
+    async fn ask(
+        &self,
+        state: Value,
+        questions: Vec<(&'static str, Question)>,
+        images: Vec<Image>,
+    ) -> Result<Answers> {
+        Jev::ask(self, state, questions, images).await
+    }
+}
 
 /// Max images per message sent to Jev (keeps requests small and fast).
 const MAX_IMAGES: usize = 4;
@@ -70,7 +99,7 @@ pub fn message_state(text: &str, images: &[Image]) -> Value {
     }
 }
 
-/// Ask a single yes/no question. `None` if Jev isn't configured or the call failed (logged).
+/// Ask a single yes/no question. `None` if no judge is configured or the call failed (logged).
 pub async fn ask_noul(
     data: &Data,
     state: Value,
@@ -78,9 +107,9 @@ pub async fn ask_noul(
     question: &str,
     criteria: Option<(&str, &str)>,
 ) -> Option<f32> {
-    let jev = data.jev.as_ref()?;
-    match jev
-        .ask(state, [("q", noul(question, criteria))], images)
+    let judge = data.judge.as_deref()?;
+    match judge
+        .ask(state, vec![("q", noul(question, criteria))], images)
         .await
     {
         Ok(a) => a.noul("q").ok(),

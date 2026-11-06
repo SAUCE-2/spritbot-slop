@@ -192,7 +192,7 @@ pub fn missing_requirements(data: &Data, rule: &dyn Rule) -> Vec<String> {
                 "`{}` needs the Whisper model, which isn't loaded (check WHISPER_MODEL)",
                 rule.id()
             )),
-            Need::Jev if data.jev.is_none() => out.push(format!(
+            Need::Jev if data.judge.is_none() => out.push(format!(
                 "`{}` needs `JEV_API_KEY` set on the bot",
                 rule.id()
             )),

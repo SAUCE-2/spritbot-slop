@@ -63,7 +63,7 @@ pub async fn problems(
         }
     }
 
-    if data.jev.is_none() {
+    if data.judge.is_none() {
         out.push("`JEV_API_KEY` isn't set, so rules that need Jev can't go live".into());
     }
 

@@ -44,8 +44,11 @@ async fn main() -> Result<()> {
             None
         }
     };
-    let jev = cfg.jev_api_key.clone().map(ai::jev::Jev::new);
-    if jev.is_none() {
+    let judge = cfg
+        .jev_api_key
+        .clone()
+        .map(|key| std::sync::Arc::new(ai::jev::Jev::new(key)) as std::sync::Arc<dyn ai::Judge>);
+    if judge.is_none() {
         tracing::warn!("JEV_API_KEY not set: rules that need Jev can't go live");
     }
     let data = Data::new(Inner {
@@ -53,7 +56,7 @@ async fn main() -> Result<()> {
         db,
         rules: rules::registry(),
         stt,
-        jev,
+        judge,
         voice: Default::default(),
         started_at: chrono::Utc::now(),
     });
