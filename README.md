@@ -25,6 +25,7 @@ offender's messages and disconnects them from VC until the timeout ends.
 |---|---|
 | `first_message` | Your first message each day must be festive (default: 5m timeout) |
 | `vc_greeting` | When you join VC, you have 10 seconds to say something festive (default: disconnect) |
+| `sign_off` | Every message must end with a Christmas greeting (default: 1m timeout) |
 
 More are on the way. See [Adding a rule](#adding-a-rule) to write your own.
 
@@ -43,6 +44,7 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
+| `/status` | Bot uptime, gateway latency, memory, and rule/punishment stats |
 | `/stats summary [month]` | How much has been logged, by kind |
 | `/stats export [month]` | Download the activity log as gzipped JSON Lines |
 | `/stats wipe confirm:true [user]` | Delete logged activity, e.g. after testing |
@@ -111,10 +113,45 @@ docker compose up -d
 ```
 
 The compose file includes [Watchtower](https://github.com/nicholas-fedor/watchtower), which keeps the
-bot updated automatically. Remove that service if you'd rather update by hand. If you use rootless
-Podman, set `CONTAINER_SOCKET` in `.env` to your Podman socket (for example
-`/run/user/1000/podman/podman.sock`). Data is stored in
+bot updated automatically. Remove that service if you'd rather update by hand. Data is stored in
 SQLite in the `spiritbot-data` volume, so it survives updates.
+
+#### Rootless Podman
+
+Watchtower can't update containers under Podman: the container it recreates fails to start with
+`cannot set memory swappiness with cgroupv2`. Use a systemd timer instead. It pulls the image and
+recreates the bot when something changed. Point Compose at Podman's socket, start only the bot, and
+add the timer:
+
+```bash
+systemctl --user enable --now podman.socket podman-restart.service
+sudo loginctl enable-linger $USER   # keep running after logout
+export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock   # also add to ~/.bashrc
+docker compose up -d spiritbot   # not plain `up -d`, which also starts Watchtower
+
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/spiritbot-update.service <<EOF
+[Service]
+Type=oneshot
+WorkingDirectory=$PWD
+Environment=DOCKER_HOST=$DOCKER_HOST
+ExecStart=$(command -v docker) compose pull -q spiritbot
+ExecStart=$(command -v docker) compose up -d spiritbot
+ExecStartPost=$(command -v podman) image prune -f
+EOF
+cat > ~/.config/systemd/user/spiritbot-update.timer <<EOF
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl --user daemon-reload && systemctl --user enable --now spiritbot-update.timer
+```
+
+If you use the standalone `docker-compose` binary, replace `docker compose` with it. The compose
+file uses `restart: always`, so `podman-restart.service` starts the bot again after a reboot.
 
 ### 3. Configure
 
@@ -137,7 +174,6 @@ All settings are environment variables in `.env`:
 | `BOT_TZ` | Timezone that defines "today" for daily rules and schedules (default `Europe/London`) |
 | `DEV_GUILD_ID` | Register commands in one server only, so they update instantly. Leave empty in production |
 | `RUST_LOG` | Log level |
-| `CONTAINER_SOCKET` | Socket Watchtower uses to manage containers (default `/var/run/docker.sock`) |
 
 ## Development
 

@@ -60,6 +60,14 @@ impl RuleRow {
     }
 }
 
+/// Punishment and timeout counts for `/status`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sqlx::FromRow)]
+pub struct PunishmentStats {
+    pub total: i64,
+    pub last_day: i64,
+    pub active_timeouts: i64,
+}
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct PunishmentLog {
     pub rule_id: String,
@@ -360,6 +368,24 @@ impl Db {
         .fetch_all(&self.0)
         .await?)
     }
+
+    /// Counts for one guild, or across every guild when `guild_id` is `None`.
+    pub async fn punishment_stats(&self, guild_id: Option<u64>) -> Result<PunishmentStats> {
+        let now = Utc::now();
+        Ok(sqlx::query_as(
+            "SELECT
+                (SELECT count(*) FROM punishments WHERE ?1 IS NULL OR guild_id = ?1) AS total,
+                (SELECT count(*) FROM punishments
+                    WHERE (?1 IS NULL OR guild_id = ?1) AND created_at > ?2) AS last_day,
+                (SELECT count(*) FROM timeouts
+                    WHERE (?1 IS NULL OR guild_id = ?1) AND until > ?3) AS active_timeouts",
+        )
+        .bind(guild_id.map(|g| g as i64))
+        .bind(fmt_time(now - chrono::Duration::days(1)))
+        .bind(fmt_time(now))
+        .fetch_one(&self.0)
+        .await?)
+    }
 }
 
 #[cfg(test)]
@@ -452,5 +478,35 @@ mod tests {
             db.recent_punishments(1, 10).await.unwrap()[0].action,
             "timed out"
         );
+    }
+
+    #[tokio::test]
+    async fn punishment_stats() {
+        let db = db().await;
+        assert_eq!(
+            db.punishment_stats(None).await.unwrap(),
+            PunishmentStats::default()
+        );
+        db.log_punishment(1, "r", 7, "timed out", "why")
+            .await
+            .unwrap();
+        db.log_punishment(2, "r", 8, "disconnected", "why")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE punishments SET created_at = ? WHERE guild_id = 2")
+            .bind(fmt_time(Utc::now() - Duration::days(2)))
+            .execute(&db.0)
+            .await
+            .unwrap();
+        db.extend_timeout(1, 7, Utc::now() + Duration::hours(1))
+            .await
+            .unwrap();
+        db.extend_timeout(2, 8, Utc::now() - Duration::seconds(1))
+            .await
+            .unwrap();
+        let all = db.punishment_stats(None).await.unwrap();
+        assert_eq!((all.total, all.last_day, all.active_timeouts), (2, 1, 1));
+        let g2 = db.punishment_stats(Some(2)).await.unwrap();
+        assert_eq!((g2.total, g2.last_day, g2.active_timeouts), (1, 0, 0));
     }
 }

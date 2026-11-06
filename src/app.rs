@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::ai::jev::Jev;
 use crate::config::Config;
@@ -31,6 +31,8 @@ pub struct Inner {
     pub vc_sessions: VcSessions,
     /// Last presence logged per person, so only changes are logged.
     pub last_presence: LastPresence,
+    /// When the process started, for `/status` uptime.
+    pub started_at: DateTime<Utc>,
 }
 
 impl Deref for Data {

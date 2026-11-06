@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
         voice: Default::default(),
         vc_sessions: Default::default(),
         last_presence: Default::default(),
+        started_at: chrono::Utc::now(),
     });
 
     let framework = poise::Framework::builder()
