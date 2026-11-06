@@ -95,7 +95,6 @@ pub struct BoxBounds {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Answers {
-    pub model: String,
     pub answers: HashMap<String, Answer>,
 }
 
@@ -355,11 +354,7 @@ mod live {
             )
             .await
             .unwrap();
-        println!(
-            "text: model={} festive={:?}",
-            text.model,
-            text.noul("festive")
-        );
+        println!("text: festive={:?}", text.noul("festive"));
 
         // White canvas with a red square in the top-left quadrant.
         let mut img = RgbImage::from_pixel(600, 400, Rgb([255, 255, 255]));
@@ -397,6 +392,6 @@ mod live {
             )
             .await
             .unwrap();
-        println!("image: model={} answers={:?}", a.model, a.answers);
+        println!("image: answers={:?}", a.answers);
     }
 }
