@@ -3,6 +3,7 @@ name = "spiritbot"
 version = "0.1.0"
 edition = "2024"
 publish = false
+repository = "https://github.com/SAUCE-2/spritbot-slop"
 
 [dependencies]
 anyhow = "1"
