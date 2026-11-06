@@ -5,11 +5,12 @@ use poise::CreateReply;
 use poise::serenity_prelude::{self as serenity, CreateAttachment, CreateEmbed};
 
 use crate::app::{Ctx, Data};
-use crate::stats::{self, Board, Period};
+use crate::stats::{self, Board, Period, Section};
 
 const COLOUR: u32 = 0xf1c40f;
-/// Discord allows 6000 characters per embed; stay comfortably under.
-const EMBED_BUDGET: usize = 5000;
+const RULES_COLOUR: u32 = 0x16a085;
+/// Discord allows 6000 characters per message (all embeds together); stay under it.
+const MESSAGE_BUDGET: usize = 5500;
 const FIELD_MAX: usize = 1024;
 
 fn guild(ctx: Ctx<'_>) -> Result<serenity::GuildId> {
@@ -34,7 +35,9 @@ async fn autocomplete_board(ctx: Ctx<'_>, partial: &str) -> serenity::CreateAuto
             if let Some(r) = b.rule_id {
                 name = format!("{name} · {r}");
             }
-            name.truncate(100);
+            if name.chars().count() > 100 {
+                name = name.chars().take(99).collect::<String>() + "…";
+            }
             serenity::AutocompleteChoice::new(name, b.id)
         })
         .collect();
@@ -59,11 +62,12 @@ async fn show(
     #[description = "Month: 2026-12, december, last, all (default: this month)"] month: Option<
         String,
     >,
-    #[description = "Show the top 10 of one board instead of the overview"]
+    #[description = "Only this section"] section: Option<Section>,
+    #[description = "Show the top 10 of one board instead"]
     #[autocomplete = "autocomplete_board"]
     board: Option<String>,
 ) -> Result<()> {
-    send(ctx, month, board, true).await
+    send(ctx, month, section, board, true).await
 }
 
 /// Post the leaderboards in this channel for everyone to see.
@@ -73,16 +77,18 @@ async fn post(
     #[description = "Month: 2026-12, december, last, all (default: this month)"] month: Option<
         String,
     >,
-    #[description = "Post the top 10 of one board instead of the overview"]
+    #[description = "Only this section"] section: Option<Section>,
+    #[description = "Post the top 10 of one board instead"]
     #[autocomplete = "autocomplete_board"]
     board: Option<String>,
 ) -> Result<()> {
-    send(ctx, month, board, false).await
+    send(ctx, month, section, board, false).await
 }
 
 async fn send(
     ctx: Ctx<'_>,
     month: Option<String>,
+    section: Option<Section>,
     board: Option<String>,
     ephemeral: bool,
 ) -> Result<()> {
@@ -102,18 +108,76 @@ async fn send(
             };
             vec![single(data, guild_id, period, b).await?]
         }
-        None => overview(data, guild_id, period).await?,
+        None => overview(data, guild_id, period, section).await?,
     };
-    for embed in embeds {
-        ctx.send(
-            CreateReply::default()
-                .embed(embed)
-                .ephemeral(ephemeral)
-                .allowed_mentions(serenity::CreateAllowedMentions::new()),
-        )
-        .await?;
+    send_embeds(ctx, embeds, ephemeral).await
+}
+
+/// Send embeds, as few per message as Discord's size limits allow.
+async fn send_embeds(ctx: Ctx<'_>, embeds: Vec<Block>, ephemeral: bool) -> Result<()> {
+    let mut batch: Vec<CreateEmbed> = Vec::new();
+    let mut len = 0;
+    let mut batches = Vec::new();
+    for (embed, size) in embeds {
+        if !batch.is_empty() && (len + size > MESSAGE_BUDGET || batch.len() == 10) {
+            batches.push(std::mem::take(&mut batch));
+            len = 0;
+        }
+        batch.push(embed);
+        len += size;
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    for embeds in batches {
+        let mut reply = CreateReply::default()
+            .ephemeral(ephemeral)
+            .allowed_mentions(serenity::CreateAllowedMentions::new());
+        for e in embeds {
+            reply = reply.embed(e);
+        }
+        ctx.send(reply).await?;
     }
     Ok(())
+}
+
+/// An embed and roughly how many characters it holds.
+type Block = (CreateEmbed, usize);
+
+/// Fields as one or more embeds under `title`, within Discord's per-embed limits.
+fn pack(title: &str, colour: u32, fields: Vec<(String, String)>) -> Vec<Block> {
+    let mut out = Vec::new();
+    let new = |cont: bool| {
+        let t = if cont {
+            format!("{title} (cont.)")
+        } else {
+            title.to_owned()
+        };
+        (CreateEmbed::new().title(&t).colour(colour), t.len(), 0)
+    };
+    let (mut cur, mut len, mut n) = new(false);
+    for (name, value) in fields {
+        let value = truncate(value, FIELD_MAX);
+        let size = name.len() + value.len();
+        if n == 25 || (n > 0 && len + size > MESSAGE_BUDGET) {
+            out.push((cur, len));
+            (cur, len, n) = new(true);
+        }
+        cur = cur.field(name, value, false);
+        len += size;
+        n += 1;
+    }
+    if n > 0 {
+        out.push((cur, len));
+    }
+    out
+}
+
+fn board_title(data: &Data, b: &Board) -> String {
+    match b.rule_id.and_then(|r| data.rule(r)) {
+        Some(r) => format!("{} · {}", b.title, r.name()),
+        None => b.title.clone(),
+    }
 }
 
 async fn single(
@@ -121,86 +185,90 @@ async fn single(
     guild_id: serenity::GuildId,
     period: Period,
     b: &Board,
-) -> Result<CreateEmbed> {
+) -> Result<Block> {
     let entries = data
         .db
         .board(guild_id.get(), period, b, None, Some(10))
         .await?;
-    let mut title = b.title.clone();
-    if let Some(r) = b.rule_id.and_then(|r| data.rule(r)) {
-        title = format!("{title} · {}", r.name());
-    }
-    Ok(CreateEmbed::new()
-        .title(title)
-        .description(truncate(stats::format_entries(b, &entries), 4000))
+    let text = truncate(stats::format_entries(b, &entries), 4000);
+    let size = text.len() + 200;
+    let embed = CreateEmbed::new()
+        .title(board_title(data, b))
+        .description(text)
         .footer(serenity::CreateEmbedFooter::new(period.label()))
-        .colour(COLOUR))
+        .colour(b.section.colour());
+    Ok((embed, size))
 }
 
-/// Top 3 of every global board, then one field per rule that saw any action.
+/// Server totals, then the top 3 of every board by section, then one field per rule.
 async fn overview(
     data: &Data,
     guild_id: serenity::GuildId,
     period: Period,
-) -> Result<Vec<CreateEmbed>> {
+    only: Option<Section>,
+) -> Result<Vec<Block>> {
     let g = guild_id.get();
-    let mut fields: Vec<(String, String)> = Vec::new();
-    for b in stats::global_boards() {
-        let entries = data.db.board(g, period, &b, None, Some(3)).await?;
-        if !entries.is_empty() {
-            fields.push((b.title.clone(), stats::format_entries(&b, &entries)));
-        }
+    let mut out = Vec::new();
+    if only.is_none() {
+        let totals = stats::format_totals(&data.db.totals(g, period).await?);
+        let size = totals.len() + 100;
+        out.push((
+            CreateEmbed::new()
+                .title(format!("🏆 Spirit Leaderboard · {}", period.label()))
+                .description(totals)
+                .colour(COLOUR),
+            size,
+        ));
     }
-    for rule in &data.rules {
-        if !data.db.rule_has_stats(g, period, rule.id()).await? {
+    let boards = stats::global_boards();
+    for section in Section::ALL {
+        if only.is_some_and(|s| s != section) {
             continue;
         }
-        let mut body = String::new();
-        for b in stats::rule_boards(rule.as_ref()) {
-            let top = data.db.board(g, period, &b, None, Some(1)).await?;
-            if let Some(e) = top.first() {
-                let _ = writeln!(
-                    body,
-                    "**{}**: <@{}> {}",
-                    b.title,
-                    e.user_id,
-                    stats::format_value(&b, e)
-                );
+        let mut fields = Vec::new();
+        for b in boards.iter().filter(|b| b.section == section) {
+            let entries = data.db.board(g, period, b, None, Some(3)).await?;
+            if !entries.is_empty() {
+                fields.push((b.title.clone(), stats::format_entries(b, &entries)));
             }
         }
-        if !body.is_empty() {
-            fields.push((format!("📜 {} (`{}`)", rule.name(), rule.id()), body));
-        }
+        out.extend(pack(section.title(), section.colour(), fields));
     }
-
-    let title = format!("🏆 Spirit Leaderboard · {}", period.label());
-    if fields.is_empty() {
-        return Ok(vec![
+    if only.is_none() {
+        let mut fields = Vec::new();
+        for rule in &data.rules {
+            if !data.db.rule_has_stats(g, period, rule.id()).await? {
+                continue;
+            }
+            let mut body = String::new();
+            for b in stats::rule_boards(rule.as_ref()) {
+                let top = data.db.board(g, period, &b, None, Some(1)).await?;
+                if let Some(e) = top.first() {
+                    let _ = writeln!(
+                        body,
+                        "**{}**: <@{}> {}",
+                        b.title,
+                        e.user_id,
+                        stats::format_value(&b, e)
+                    );
+                }
+            }
+            if !body.is_empty() {
+                fields.push((format!("{} (`{}`)", rule.name(), rule.id()), body));
+            }
+        }
+        out.extend(pack("📜 Rule by Rule", RULES_COLOUR, fields));
+    }
+    if out.is_empty() {
+        out.push((
             CreateEmbed::new()
-                .title(title)
-                .description("Nothing recorded yet. Get festive! 🎄")
+                .title(format!("🏆 Spirit Leaderboard · {}", period.label()))
+                .description("Nothing recorded in that section yet.")
                 .colour(COLOUR),
-        ]);
+            100,
+        ));
     }
-    // Split across embeds to stay within Discord's limits.
-    let mut embeds = Vec::new();
-    let (mut cur, mut len, mut n) = (CreateEmbed::new().title(&title).colour(COLOUR), 0, 0);
-    for (name, value) in fields {
-        let value = truncate(value, FIELD_MAX);
-        let size = name.len() + value.len();
-        if n == 25 || len + size > EMBED_BUDGET {
-            embeds.push(cur);
-            cur = CreateEmbed::new()
-                .title(format!("{title} (cont.)"))
-                .colour(COLOUR);
-            (len, n) = (0, 0);
-        }
-        cur = cur.field(name, value, false);
-        len += size;
-        n += 1;
-    }
-    embeds.push(cur);
-    Ok(embeds)
+    Ok(out)
 }
 
 fn truncate(mut s: String, max: usize) -> String {
@@ -229,53 +297,70 @@ async fn me(
     let period = period(data, month.as_deref())?;
     let user = user.unwrap_or_else(|| ctx.author().clone());
     ctx.defer_ephemeral().await.ok();
-    let mut text = String::new();
+
+    let mut lines: Vec<(Option<Section>, String)> = Vec::new();
     for b in stats::all_boards(&data.rules) {
-        let where_ = match b.rule_id.and_then(|r| data.rule(r)) {
-            Some(r) => format!(" · {}", r.name()),
-            None => String::new(),
-        };
-        if b.is_quote() {
+        let group = b.rule_id.is_none().then_some(b.section);
+        let line = if b.is_quote() {
             // Quote boards: their own standout moment.
             let mine = data
                 .db
                 .board(guild_id.get(), period, &b, Some(user.id.get()), Some(1))
                 .await?;
-            if let Some(e) = mine.first() {
-                let _ = writeln!(
-                    text,
-                    "**{}**{where_}: {}",
-                    b.title,
-                    stats::format_value(&b, e)
-                );
-            }
-            continue;
+            mine.first()
+                .map(|e| format!("**{}**: {}", b.title, stats::format_value(&b, e)))
+        } else {
+            let all = data
+                .db
+                .board(guild_id.get(), period, &b, None, None)
+                .await?;
+            all.iter().position(|e| e.user() == user.id.get()).map(|i| {
+                let medal = ["🥇 ", "🥈 ", "🥉 "].get(i).copied().unwrap_or_default();
+                format!(
+                    "**{}**: {medal}#{} of {} · {}",
+                    board_title(data, &b),
+                    i + 1,
+                    all.len(),
+                    stats::format_value(&b, &all[i])
+                )
+            })
+        };
+        if let Some(l) = line {
+            lines.push((group, l));
         }
-        let all = data
-            .db
-            .board(guild_id.get(), period, &b, None, None)
+    }
+
+    let title = format!("🎁 {} · {}", user.name, period.label());
+    if lines.is_empty() {
+        let embed = CreateEmbed::new()
+            .title(title)
+            .description("Nothing recorded yet.")
+            .colour(COLOUR);
+        ctx.send(CreateReply::default().embed(embed).ephemeral(true))
             .await?;
-        if let Some(i) = all.iter().position(|e| e.user_id == user.id.get()) {
-            let _ = writeln!(
-                text,
-                "**{}**{where_}: #{} of {} · {}",
-                b.title,
-                i + 1,
-                all.len(),
-                stats::format_value(&b, &all[i])
-            );
+        return Ok(());
+    }
+    let mut fields = Vec::new();
+    let groups = Section::ALL.map(Some).into_iter().chain([None]);
+    for group in groups {
+        let mut value = String::new();
+        for (_, l) in lines.iter().filter(|(g, _)| *g == group) {
+            // Split long sections into several fields rather than cutting them off.
+            if value.len() + l.len() + 1 > FIELD_MAX {
+                fields.push((group_name(group).to_owned(), std::mem::take(&mut value)));
+            }
+            value.push_str(l);
+            value.push('\n');
+        }
+        if !value.is_empty() {
+            fields.push((group_name(group).to_owned(), value));
         }
     }
-    if text.is_empty() {
-        text = "Nothing recorded yet.".into();
-    }
-    let embed = CreateEmbed::new()
-        .title(format!("🎁 {} · {}", user.name, period.label()))
-        .description(truncate(text, 4000))
-        .colour(COLOUR);
-    ctx.send(CreateReply::default().embed(embed).ephemeral(true))
-        .await?;
-    Ok(())
+    send_embeds(ctx, pack(&title, COLOUR, fields), true).await
+}
+
+fn group_name(g: Option<Section>) -> &'static str {
+    g.map_or("📜 Rules", Section::title)
 }
 
 /// Download every recorded event as a CSV, to build your own leaderboard.

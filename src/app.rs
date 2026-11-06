@@ -7,6 +7,7 @@ use crate::ai::jev::Jev;
 use crate::config::Config;
 use crate::db::Db;
 use crate::rules::Rule;
+use crate::stats::activity::VcSessions;
 use crate::voice::listener::VoiceListener;
 use crate::voice::stt::Stt;
 
@@ -26,6 +27,8 @@ pub struct Inner {
     /// None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
     pub jev: Option<Jev>,
     pub voice: VoiceListener,
+    /// Who's in VC since when, for time-in-VC stats.
+    pub vc_sessions: VcSessions,
 }
 
 impl Deref for Data {

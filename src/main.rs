@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
         stt,
         jev,
         voice: Default::default(),
+        vc_sessions: Default::default(),
     });
 
     let framework = poise::Framework::builder()

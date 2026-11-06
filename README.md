@@ -44,8 +44,8 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
 | `/leaderboard me [user] [month]` | Where you (or someone) stand on every board |
-| `/leaderboard show [month] [board]` | Peek at the leaderboards privately (overview, or top 10 of one board) |
-| `/leaderboard post [month] [board]` | Post them in the channel for everyone: the end-of-month reveal |
+| `/leaderboard show [month] [section] [board]` | Peek at the leaderboards privately (overview, one section, or top 10 of one board) |
+| `/leaderboard post [month] [section] [board]` | Post them in the channel for everyone: the end-of-month reveal |
 | `/leaderboard export [month]` | Every recorded event as a CSV, to build your own |
 | `/leaderboard wipe confirm:true [user]` | Delete recorded stats, e.g. after testing |
 
@@ -53,21 +53,81 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 
 ## Leaderboards
 
+Everything is recorded for members with the enforced role, so at the end of the month you can run
+`/leaderboard post month:last` and crown everyone. The overview opens with server totals (people,
+messages, judgements, timeouts, VC time, the most festive, grinchiest and naughtiest days), then the
+top 3 of every board below, then a rule-by-rule summary.
+
+**😈 Naughty**
+
 | Board | Who tops it |
 |---|---|
 | 🎅 Naughty List | Most punishments |
-| ⏳ Hard Time | Most timeout time handed out |
-| 😇 Nice List / 🦹 The Grinch | Highest / lowest average festiveness (at least 3 judgements) |
-| 🔥 Festive Streak | Most days in a row judged festive and never punished |
-| 🌟 Most Festive / 💀 Least Festive Moment | The single best and worst thing anyone said, quoted |
-| 😅 Closest Call | The least festive thing that still passed |
+| ⏳ Hard Time / ⛓️ Longest Sentence | Most timeout time in total / in one go |
+| 📉 Worst Day | Most punishments in a single day |
+| 🔁 Repeat Offender / 😈 Naughty Streak | Most days punished / most days in a row |
+| 🃏 Rule Collector | Most different rules broken |
 | 🚪 Can't Stay Away | Most messages and VC joins attempted while timed out |
+| 🧱 Talking to a Wall | Longest message typed while timed out (quoted) |
+| 🩸 First Blood / ⚰️ Latest Victim | First and most recent punishment |
+| 🙄 Bah Humbug | Said "humbug", "grinch" or "hate christmas" the most |
 | 🙏 Teacher's Pet | Most pardons |
-| 💬 Chatterbox / 🎧 VC Regular | Most messages / VC joins |
 
-Each rule also gets its own most punished, most festive and least festive boards, plus any it
-adds. `vc_greeting` adds 🤐 Silent Night (joined VC and said nothing) and 🏃 Cold Feet (left before
-the 10 seconds were up).
+**😇 Nice**
+
+| Board | Who tops it |
+|---|---|
+| 😇 Nice List / 🦹 The Grinch | Highest / lowest average festiveness (at least 3 judgements) |
+| ✅ Most Reliable | Highest share of judgements passed (at least 5) |
+| 🔥 Festive Streak | Most days in a row judged festive and never punished |
+| 📈 Most Improved | Biggest rise in average score from the first half of the month to the second |
+| 👼 Angel | Most judgements without ever being punished |
+| ✨ Christmas Miracle / 🧊 Ice Cold | Most near-perfect (≥ 0.95) / zero-spirit (≤ 0.05) scores |
+| 🎢 Mood Swings | Biggest gap between best and worst score |
+| 🔍 Under Scrutiny | Judged the most |
+| 🌟 Most Festive / 💀 Least Festive Moment | Best and worst single thing said, quoted |
+| 😅 Closest Call / 📜 Festive Essay | Least festive thing that still passed / longest festive message |
+| 🎄 Merry Christmas! / 🎅 Ho Ho Ho | Most seasonal greetings / ho ho hos |
+| 🔔 Said "Christmas" / 🎁 Festive Emoji | Most mentions of Christmas / 🎄🎅❄️🎁… used |
+
+**💬 Chat**
+
+| Board | Who tops it |
+|---|---|
+| 💬 Chatterbox / ✍️ Wordsmith | Most messages / words |
+| 📖 Novelist / 🗣️ Rambler | Longest message / most words per message |
+| 📨 Busiest Day / 📅 Ever-Present | Most messages in one day / most days active |
+| 📢 SHOUTER / 🔊 Loudest Message | Most all-caps messages / the longest one, quoted |
+| ❓ Curious | Most questions |
+| 🦉 Night Owl / 🐦 Early Bird | Most messages between midnight and 5am / 5am and 8am |
+| 😂 Emoji Fiend / 🖼️ Meme Dealer / 🔗 Link Dropper | Most emoji / images, GIFs and stickers / links |
+| ✏️ Second Thoughts | Most messages edited |
+
+**🤝 Social**
+
+| Board | Who tops it |
+|---|---|
+| ⭐ Crowd Pleaser / 👍 Generous | Most reactions received / given |
+| 🎄 Festive Reactor | Most festive reactions given |
+| 📣 Most Wanted / 🔔 Pinger | Pinged the most / pinged others the most |
+| ↩️ Reply Guy / 🗨️ Conversation Starter | Most replies sent / received |
+
+**🎧 Voice**
+
+| Board | Who tops it |
+|---|---|
+| 🎧 VC Regular / 📆 VC Every Day | Most joins / most days in VC |
+| 🪵 Yule Log / 🕯️ Marathon / 🌙 Longest VC Day | Most time in VC in total / in one session / in one day |
+| 🐇 Channel Hopper / 💨 Drive-By | Most channel switches / visits under a minute |
+| 🙉 Deaf to the Carols / 🤫 Silent Treatment | Deafened / muted the most |
+| 📺 Streamer / 📸 Camera On | Went live / turned the camera on the most |
+
+**📜 Every rule** also gets its own Most punished, Most and Least festive, Best average and First
+Blood boards, plus any it adds. `vc_greeting` adds 🤐 Silent Night (joined VC and said nothing) and
+🏃 Cold Feet (left before the 10 seconds were up).
+
+VC time is tracked in memory. People already in VC when the bot starts are picked up from then, but
+a session that was running during a restart loses the time before the restart.
 
 ## Self-hosting
 
@@ -149,7 +209,9 @@ To run cargo in a toolchain image with the native dependencies:
      not. This feeds the leaderboards, and the rule gets its own most and least festive boards.
      Punishments are recorded for you.
    - `cx.record(user, Event::new("my_kind"))` records anything else worth ranking. Add a board for it
-     in the rule's `boards()`, e.g. `Board::most("dodged", "🏃 Most dodged", &["my_kind"], "times")`
+     in the rule's `boards()`, e.g. `Board::most("dodged", "🏃 Most dodged", &["my_kind"], "times")`.
+     Boards can also rank totals, averages, records for a single day (`.per_day()`), distinct days,
+     or quote standout moments (`Board::quote`); see `src/stats/boards.rs`.
    - `cx.data.jev` is the raw Jev client (Choice/Score questions, several questions in one call)
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 
