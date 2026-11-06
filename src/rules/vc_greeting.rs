@@ -9,7 +9,6 @@ use serde_json::json;
 
 use super::{Need, Rule, RuleCx};
 use crate::punish::Punishment;
-use crate::stats::FESTIVE;
 use crate::voice::listener::Outcome;
 
 const WINDOW: Duration = Duration::from_secs(10);
@@ -85,21 +84,23 @@ async fn judge(cx: &RuleCx, user: UserId, channel: ChannelId) -> Result<()> {
         }
     };
 
-    let reason = if heard.is_empty() {
+    let (score, reason) = if heard.is_empty() {
         cx.log(user, SILENT, json!({ "channel_id": channel })).await;
-        "didn't say anything festive within 10s of joining VC".to_owned()
+        let reason = "didn't say anything festive within 10s of joining VC".to_owned();
+        (None, reason)
     } else {
         let Some(score) =
             crate::ai::ask_noul(&cx.data, json!(heard), vec![], QUESTION, Some((YES, NO))).await
         else {
             return Ok(()); // Jev failed: don't punish
         };
-        cx.record_judgement(user, score, &heard).await;
-        if score >= FESTIVE {
+        if cx.judged(user, score, &heard).await {
             return Ok(());
         }
-        format!("VC greeting wasn't festive: \"{heard}\" (jev {score:.2})")
+        (
+            Some(score),
+            format!("VC greeting wasn't festive: \"{heard}\""),
+        )
     };
-    cx.punish(user, &reason).await?;
-    Ok(())
+    cx.enforce(user, score, &reason).await
 }

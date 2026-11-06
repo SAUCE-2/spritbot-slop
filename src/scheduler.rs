@@ -10,6 +10,7 @@ use poise::serenity_prelude::{
 
 use crate::app::Data;
 use crate::db::RuleRow;
+use crate::punish;
 use crate::rules::{Rule, RuleCx, missing_requirements};
 use crate::setup;
 
@@ -32,7 +33,7 @@ pub async fn activate(
     let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
     let log = crate::stats::Log::new(
         crate::stats::kind::RULE_ACTIVATED,
-        serde_json::json!({ "name": rule.name(), "punishment": punishment }),
+        serde_json::json!({ "name": rule.name(), "punishment": punishment, "shadow": row.shadow }),
     )
     .rule(rule.id());
     crate::stats::record(data, guild_id, log).await;
@@ -40,13 +41,26 @@ pub async fn activate(
     Ok(Ok(()))
 }
 
-async fn announce(
+/// Tell the server a rule is live. A shadowed rule isn't live for its members, so instead of a
+/// public announcement the log channel gets a note; turning shadow off announces it then.
+pub async fn announce(
     ctx: &serenity::Context,
     data: &Data,
     guild_id: GuildId,
     rule: &dyn Rule,
     row: &RuleRow,
 ) {
+    if row.shadow {
+        let id = rule.id();
+        let note = format!(
+            "👻 **{}** (`{id}`) is live in shadow mode: it's judged as usual and would-be \
+             breaches are reported here, but nobody is replied to or punished, and it hasn't been \
+             announced. `/rule shadow {id} off` makes it live for real and announces it.",
+            rule.name()
+        );
+        punish::post_log(ctx, data, guild_id, note).await;
+        return;
+    }
     let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
     let Ok(g) = data.db.guild(guild_id.get()).await else {
         return;

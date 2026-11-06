@@ -5,7 +5,7 @@
 //!   presence, members, typing, commands, threads), with the full Discord payload as JSON.
 //! - The bot logs its own events (judgements, punishments, timeouts, pardons, rule activations)
 //!   with [`record`]. Rules log theirs with [`crate::rules::RuleCx::log`] and
-//!   [`crate::rules::RuleCx::record_judgement`].
+//!   [`crate::rules::RuleScope::judged`].
 //!
 //! `/stats export` downloads it all as gzipped JSON Lines; or copy the SQLite database itself.
 
@@ -25,7 +25,7 @@ use crate::db::{self, Db};
 
 /// Kinds the bot logs itself. Discord events use the names in [`capture`].
 pub mod kind {
-    /// Jev judged something: `{score, said, festive}`.
+    /// Jev judged something: `{score, said, threshold, festive}`; `festive` = met the rule's threshold.
     pub const JUDGED: &str = "judged";
     /// A rule punished someone: `{punishment, action, reason, timeout_secs}`.
     pub const PUNISHED: &str = "punished";
@@ -43,7 +43,8 @@ pub mod kind {
     pub const VC_SESSION: &str = "vc_session";
 }
 
-/// Jev score at or above which something counts as festive (what the rules punish below).
+/// Default Jev score at or above which something counts as festive (what the rules punish
+/// below); see [`crate::rules::Threshold`].
 pub const FESTIVE: f32 = 0.5;
 
 /// One log entry, built up and then passed to [`record`].

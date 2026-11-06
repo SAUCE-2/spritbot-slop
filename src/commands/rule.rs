@@ -7,6 +7,7 @@ use poise::serenity_prelude::{self as serenity, CreateEmbed};
 
 use crate::app::{Ctx, Data};
 use crate::punish::{Punishment, parse_duration};
+use crate::rules::{Threshold, ThresholdSetting};
 use crate::scheduler;
 
 async fn autocomplete_rule(ctx: Ctx<'_>, partial: &str) -> serenity::CreateAutocompleteResponse {
@@ -48,6 +49,8 @@ async fn reply(ctx: Ctx<'_>, text: impl Into<String>) -> Result<()> {
         "schedule",
         "unschedule",
         "punishment",
+        "threshold",
+        "shadow",
         "reset"
     ),
     subcommand_required
@@ -66,14 +69,21 @@ async fn list(ctx: Ctx<'_>) -> Result<()> {
         .colour(0x27ae60);
     for rule in &data.rules {
         let row = data.db.rule(guild_id.get(), rule.id()).await?;
-        let status = match (row.enabled, row.start_date) {
+        let mut status = match (row.enabled, row.start_date) {
             (true, _) => "🟢 active".to_owned(),
             (false, Some(d)) => format!("📅 starts {d}"),
             _ => "⚫ off".to_owned(),
         };
+        if row.shadow {
+            status.push_str(" · 👻 shadow");
+        }
         let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
+        let threshold = match row.threshold {
+            Some(t) => format!("**{t}**"),
+            None => format!("**{}** (default)", Threshold::DEFAULT),
+        };
         let body = format!(
-            "{status} · punishment: **{punishment}**
+            "{status} · punishment: **{punishment}** · threshold: {threshold}
 {}",
             rule.description()
         );
@@ -89,7 +99,12 @@ async fn enable(ctx: Ctx<'_>, #[autocomplete = "autocomplete_rule"] rule: String
     let guild_id = guild(ctx)?;
     let data = ctx.data();
     let r = get_rule(data, &rule)?;
+    let shadow = data.db.rule(guild_id.get(), &rule).await?.shadow;
     let text = match scheduler::activate(ctx.serenity_context(), data, guild_id, &r).await? {
+        Ok(()) if shadow => format!(
+            "👻 `{rule}` is live in shadow mode: would-be breaches go to the log channel, nobody \
+             is punished, and it wasn't announced. `/rule shadow {rule} off` makes it live for real."
+        ),
         Ok(()) => format!("🟢 `{rule}` is live and announced."),
         Err(missing) => format!("Can't enable `{rule}` yet:\n• {}", missing.join("\n• ")),
     };
@@ -216,6 +231,76 @@ async fn punishment(
     row.punishment = Some(p);
     data.db.save_rule(&row).await?;
     reply(ctx, format!("`{rule}` punishment: **{p}**")).await
+}
+
+/// Set the Jev score (0 to 1) a rule's judged messages and greetings must reach.
+#[poise::command(slash_command, required_permissions = "ADMINISTRATOR")]
+async fn threshold(
+    ctx: Ctx<'_>,
+    #[autocomplete = "autocomplete_rule"] rule: String,
+    #[description = "A score from 0 to 1 (e.g. 0.35; lower is more lenient), or `default`"]
+    value: String,
+) -> Result<()> {
+    let guild_id = guild(ctx)?;
+    let data = ctx.data();
+    get_rule(data, &rule)?;
+    let ThresholdSetting(threshold) = value.parse().map_err(anyhow::Error::msg)?;
+    let mut row = data.db.rule(guild_id.get(), &rule).await?;
+    row.threshold = threshold;
+    data.db.save_rule(&row).await?;
+    let shown = match threshold {
+        Some(t) => t.to_string(),
+        None => format!("{} (default)", Threshold::DEFAULT),
+    };
+    reply(ctx, format!("`{rule}` threshold: **{shown}**")).await
+}
+
+#[derive(Debug, poise::ChoiceParameter)]
+enum Switch {
+    On,
+    Off,
+}
+
+/// Shadow mode: judge and log as usual, but only report would-be breaches to the log channel.
+#[poise::command(slash_command, required_permissions = "ADMINISTRATOR")]
+async fn shadow(
+    ctx: Ctx<'_>,
+    #[autocomplete = "autocomplete_rule"] rule: String,
+    mode: Switch,
+) -> Result<()> {
+    let guild_id = guild(ctx)?;
+    let data = ctx.data();
+    let r = get_rule(data, &rule)?;
+    let mut row = data.db.rule(guild_id.get(), &rule).await?;
+    let on = matches!(mode, Switch::On);
+    if row.shadow == on {
+        return reply(
+            ctx,
+            format!("`{rule}` shadow mode is already {}.", on_off(on)),
+        )
+        .await;
+    }
+    row.shadow = on;
+    data.db.save_rule(&row).await?;
+    let text = match (row.enabled, on) {
+        (true, true) => format!(
+            "👻 `{rule}` is in shadow mode: would-be breaches go to the log channel and nobody \
+             is punished."
+        ),
+        (true, false) => format!("🟢 `{rule}` is out of shadow mode: live and announced."),
+        (false, true) => format!(
+            "👻 `{rule}` will run in shadow mode once enabled (without a public announcement)."
+        ),
+        (false, false) => format!("`{rule}` will run live once enabled."),
+    };
+    if row.enabled {
+        scheduler::announce(ctx.serenity_context(), data, guild_id, r.as_ref(), &row).await;
+    }
+    reply(ctx, text).await
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
 }
 
 /// Forget what a rule remembers (for one user, or everyone), so it can trigger again.

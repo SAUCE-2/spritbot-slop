@@ -9,7 +9,7 @@ use poise::serenity_prelude::{
 
 use crate::app::Data;
 use crate::punish;
-use crate::rules::{Msg, MsgKind, RuleCx, RuleScope, judge_message};
+use crate::rules::{Enforcement, Msg, MsgKind, RuleCx, RuleScope, judge_message};
 use crate::setup;
 use crate::stats::{self, Log, kind};
 use serde_json::json;
@@ -165,7 +165,7 @@ async fn on_chat(ctx: &serenity::Context, data: &Data, msg: &Message, kind: MsgK
 }
 
 /// One judge call answers every enabled rule's check on the message; then each broken rule
-/// replies and punishes.
+/// replies and punishes, or in shadow mode only reports to the log channel.
 async fn judge_chat(
     ctx: &serenity::Context,
     data: &Data,
@@ -173,14 +173,17 @@ async fn judge_chat(
     m: &Msg<'_>,
 ) -> Result<()> {
     let scopes = RuleScope::enabled(data, guild_id).await?;
+    let author = m.msg.author.id;
     for breach in judge_message(data.judge.as_deref(), &scopes, m).await {
-        m.msg.reply(ctx, breach.reply()).await.ok();
+        let enforcement = breach.enforcement(author);
+        if let Enforcement::Punish(_) = enforcement {
+            m.msg.reply(ctx, breach.reply()).await.ok();
+        }
         let cx = RuleCx {
             ctx: ctx.clone(),
             scope: breach.scope.clone(),
         };
-        let punished = cx.punish(m.msg.author.id, &breach.reason()).await;
-        log_err(&cx, punished.map(drop));
+        log_err(&cx, cx.carry_out(author, enforcement).await);
     }
     Ok(())
 }

@@ -3,6 +3,7 @@
 mod chat;
 mod first_message;
 mod sign_off;
+mod threshold;
 mod vc_greeting;
 
 use std::ops::Deref;
@@ -19,6 +20,7 @@ use crate::punish::{self, Punishment};
 use crate::stats::{self, Log};
 
 pub use chat::{MessageCheck, Msg, MsgKind, judge_message};
+pub use threshold::{Threshold, ThresholdSetting};
 
 /// Every rule, in display order. Add each new daily rule here (one file per rule in this folder).
 pub fn registry() -> Vec<Arc<dyn Rule>> {
@@ -139,15 +141,41 @@ impl RuleScope {
         stats::record(&self.data, self.guild_id, log).await
     }
 
-    /// Log a Jev verdict and what was judged. Called whenever the rule judges something,
-    /// festive or not (for chat messages, [`judge_message`] does it).
-    pub async fn record_judgement(&self, user: UserId, score: f32, said: &str) {
+    /// This rule's threshold in this guild.
+    pub fn threshold(&self) -> Threshold {
+        self.row.threshold.unwrap_or_default()
+    }
+
+    /// Decide a Jev `score` on what `user` said: whether it keeps the rule (meets the rule's
+    /// threshold). Logs the verdict. Every judged thing goes through here, festive or not (for
+    /// chat messages, [`judge_message`] does it).
+    pub async fn judged(&self, user: UserId, score: f32, said: &str) -> bool {
+        let threshold = self.threshold();
+        let kept = threshold.kept_by(score);
         let data = serde_json::json!({
             "score": score,
             "said": said,
-            "festive": score >= stats::FESTIVE,
+            "threshold": threshold.get(),
+            "festive": kept,
         });
-        self.log(user, stats::kind::JUDGED, data).await
+        self.log(user, stats::kind::JUDGED, data).await;
+        kept
+    }
+
+    /// What to do now that `user` broke the rule: punish them, or in shadow mode only report
+    /// it. `score` is Jev's, if it was asked; `reason` says what they did.
+    pub fn enforcement(&self, user: UserId, score: Option<f32>, reason: &str) -> Enforcement {
+        if self.row.shadow {
+            let scored = score
+                .map(|s| format!(" (score {s:.2}, threshold {})", self.threshold()))
+                .unwrap_or_default();
+            let rule = self.rule.id();
+            return Enforcement::Report(format!(
+                "👻 [shadow] <@{user}> would have broken **{rule}**{scored}: {reason}"
+            ));
+        }
+        let jev = score.map(|s| format!(" (jev {s:.2})")).unwrap_or_default();
+        Enforcement::Punish(format!("{reason}{jev}"))
     }
 
     pub async fn state<T: serde::de::DeserializeOwned>(
@@ -190,6 +218,15 @@ impl RuleScope {
     }
 }
 
+/// What happens to someone who broke a rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Enforcement {
+    /// Punish them, for this reason.
+    Punish(String),
+    /// The rule is in shadow mode: post this to the log channel and nothing else.
+    Report(String),
+}
+
 /// A [`RuleScope`] plus the Discord connection, for hooks that act on Discord themselves.
 /// Owned so rules can move it into spawned tasks.
 #[derive(Clone)]
@@ -218,7 +255,24 @@ impl RuleCx {
         })
     }
 
-    pub async fn punish(&self, user: UserId, reason: &str) -> Result<String> {
+    /// `user` broke the rule: punish them, or in shadow mode only report it to the log channel.
+    pub async fn enforce(&self, user: UserId, score: Option<f32>, reason: &str) -> Result<()> {
+        self.carry_out(user, self.enforcement(user, score, reason))
+            .await
+    }
+
+    /// Do what [`RuleScope::enforcement`] decided.
+    pub async fn carry_out(&self, user: UserId, enforcement: Enforcement) -> Result<()> {
+        match enforcement {
+            Enforcement::Punish(reason) => self.punish(user, &reason).await.map(drop),
+            Enforcement::Report(line) => {
+                punish::post_log(&self.ctx, &self.data, self.guild_id, line).await;
+                Ok(())
+            }
+        }
+    }
+
+    async fn punish(&self, user: UserId, reason: &str) -> Result<String> {
         punish::punish(
             &self.ctx,
             &self.data,
