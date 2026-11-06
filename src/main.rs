@@ -98,7 +98,11 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MEMBERS
         | GatewayIntents::GUILD_PRESENCES;
+    // Keep recent messages so an edit can be told apart from an embed unfurl (see events.rs).
+    let mut cache = serenity::cache::Settings::default();
+    cache.max_messages = 50;
     serenity::ClientBuilder::new(&cfg.discord_token, intents)
+        .cache_settings(cache)
         .framework(framework)
         .register_songbird_from_config(voice_cfg)
         .await?
