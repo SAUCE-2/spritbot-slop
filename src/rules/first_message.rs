@@ -59,27 +59,32 @@ impl Rule for FirstMessage {
         &[Need::Jev]
     }
 
+    /// Judges a user's first message of the day, and edits to that message (a festive first
+    /// message can't be edited into something else). Edits to later messages are ignored.
     async fn message_check(&self, s: &RuleScope, m: &Msg<'_>) -> Result<Option<MessageCheck>> {
-        if m.kind == MsgKind::Edited {
-            return Ok(None);
-        }
         let user = m.msg.author.id;
         let seen: Option<Judged> = s.state(user, JUDGED).await?;
-        let today = s.today();
-        if seen.is_some_and(|j| j.day == today) {
-            return Ok(None);
-        }
-        // Claim the day before asking, atomically, so only one message can be the first.
-        let first = Judged {
-            day: today,
+        let this = Judged {
+            day: s.today(),
             message: m.msg.id,
         };
-        let claimed = s.swap_state(user, JUDGED, seen.as_ref(), &first).await?;
-        Ok(claimed.then_some(CHECK))
+        Ok(match m.kind {
+            MsgKind::Edited => (seen == Some(this)).then_some(CHECK),
+            MsgKind::Posted if seen.is_some_and(|j| j.day == this.day) => None,
+            // Claim the day before asking, atomically, so only one message can be the first.
+            MsgKind::Posted => s
+                .swap_state(user, JUDGED, seen.as_ref(), &this)
+                .await?
+                .then_some(CHECK),
+        })
     }
 
-    /// The judge failed: don't punish, judge their next message instead.
+    /// The judge failed: don't punish. For a new message, release the day so their next message
+    /// is judged instead; an edit keeps the claim (the original was already judged).
     async fn message_unjudged(&self, s: &RuleScope, m: &Msg<'_>) -> Result<()> {
-        s.clear_state(m.msg.author.id).await
+        match m.kind {
+            MsgKind::Posted => s.clear_state(m.msg.author.id).await,
+            MsgKind::Edited => Ok(()),
+        }
     }
 }

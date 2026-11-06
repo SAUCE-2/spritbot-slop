@@ -362,4 +362,63 @@ pub(crate) mod tests {
         assert_eq!(a.len() + b.len(), 1, "punished {a:?} and {b:?}");
         assert_eq!(judge.calls().len(), 1);
     }
+
+    #[tokio::test]
+    async fn first_message_rejudges_edits_to_the_message_it_judged_only() {
+        let data = data(&["first_message"]).await;
+        let judge = FakeJudge::answering(0.1);
+        let first = message(1, 7, "Merry Christmas!");
+        let later = message(2, 7, "hello");
+        broken_rules(&data, &judge, &first, MsgKind::Posted).await;
+        broken_rules(&data, &judge, &later, MsgKind::Posted).await;
+        assert_eq!(judge.calls().len(), 1);
+
+        let first = message(1, 7, "bah humbug");
+        let later = message(2, 7, "bah humbug");
+        assert!(
+            broken_rules(&data, &judge, &later, MsgKind::Edited)
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            broken_rules(&data, &judge, &first, MsgKind::Edited).await,
+            vec!["first_message"]
+        );
+        assert_eq!(judge.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_edit_the_judge_cant_answer_leaves_the_day_claimed() {
+        let data = data(&["first_message"]).await;
+        let up = FakeJudge::answering(0.9);
+        broken_rules(
+            &data,
+            &up,
+            &message(1, 7, "Merry Christmas!"),
+            MsgKind::Posted,
+        )
+        .await;
+        let down = FakeJudge::failing();
+        broken_rules(&data, &down, &message(1, 7, "meh"), MsgKind::Edited).await;
+        // Their next message is still not their first of the day.
+        assert!(
+            broken_rules(&data, &up, &message(2, 7, "hi"), MsgKind::Posted)
+                .await
+                .is_empty()
+        );
+        assert_eq!(up.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sign_off_rejudges_every_edit() {
+        let data = data(&["sign_off"]).await;
+        let judge = FakeJudge::answering(0.1);
+        for _ in 0..2 {
+            assert_eq!(
+                broken_rules(&data, &judge, &message(1, 7, "hello"), MsgKind::Edited).await,
+                vec!["sign_off"]
+            );
+        }
+        assert_eq!(judge.calls().len(), 2);
+    }
 }
