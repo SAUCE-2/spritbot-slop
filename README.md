@@ -10,7 +10,8 @@ offender's messages and disconnects them from VC until the timeout ends.
 
 - **Daily rules.** Schedule rules ahead of time and the bot announces each one when it goes live.
 - **AI judging.** Messages, images and GIFs are judged by [Jev](https://typesafe.ai), so "festive"
-  means something more than a keyword list.
+  means something more than a keyword list. Edits are judged too, so a festive message can't be
+  edited into something else afterwards. Each message costs one Jev call, however many rules are on.
 - **Voice checks.** The bot listens in VC and transcribes speech locally with
   [Whisper](https://github.com/ggerganov/whisper.cpp). Audio never leaves your server, but the
   transcript is judged by Jev (see [Privacy](#privacy)).
@@ -24,9 +25,9 @@ offender's messages and disconnects them from VC until the timeout ends.
 
 | Rule | What it does |
 |---|---|
-| `first_message` | Your first message each day must be festive (default: 5m timeout) |
+| `first_message` | Your first message each day must be festive, including if you edit it later (default: 5m timeout) |
 | `vc_greeting` | When you join VC, you have 10 seconds to say something festive (default: disconnect) |
-| `sign_off` | Every message must end with a Christmas greeting (default: 1m timeout) |
+| `sign_off` | Every message must end with a Christmas greeting, and every edit is checked again (default: 1m timeout) |
 
 More are on the way. See [Adding a rule](#adding-a-rule) to write your own.
 
@@ -210,18 +211,25 @@ To run cargo in a toolchain image with the native dependencies:
 ### Adding a rule
 
 1. Create `src/rules/<rule>.rs` with a struct that implements `Rule`. Implement only the hooks you
-   need: `on_message`, `on_voice_join`, `on_presence` and `on_tick`.
+   need:
+   - `message_check` for chat messages: return a `MessageCheck` (a yes/no question for Jev, what
+     counts as yes and no, and the reply and log reason for a "no"), or `None` to let the message
+     through. Don't call Jev yourself: the bot puts every enabled rule's check on a message into one
+     Jev call, logs each verdict, and replies and punishes for each "no". It's called for new
+     messages and for edits (`m.kind` is `MsgKind::Posted` or `MsgKind::Edited`), so decide what an
+     edit means for your rule.
+   - `message_unjudged` if Jev couldn't answer your check (nobody is punished): undo anything
+     `message_check` reserved, e.g. the day `first_message` claimed.
+   - `on_voice_join`, `on_presence` and `on_tick` for everything else.
 2. Add it to `registry()` in `src/rules/mod.rs`.
-3. Use the helpers on `RuleCx`:
-   - `cx.ask_msg(m, "yes/no question", criteria)` asks Jev anything about a message (text and images).
-     Prefer this to hand-written heuristics.
-   - `cx.punish(user, reason)` punishes someone
-   - `cx.state` / `cx.set_state` store per-user memory
-   - `cx.record_judgement(user, score, what_they_said)` whenever Jev judges something, festive or
-     not. Punishments are logged for you.
-   - `cx.log(user, "my_kind", json!({...}))` logs anything else that happened. Log generously, since you
-     can't go back for data later.
-   - `cx.data.jev` is the raw Jev client (Choice/Score questions, several questions in one call)
+3. Use the helpers on `RuleScope` (passed to the message hooks; `RuleCx` in the other hooks derefs to it):
+   - `s.state` reads per-user memory; `s.swap_state` writes it only if it still holds what you read,
+     so two messages at once can't both claim the same thing. `s.clear_state` forgets it.
+   - `s.today()` is today in the guild's timezone
+   - `s.log(user, "my_kind", json!({...}))` logs anything else that happened. Log generously, since
+     you can't go back for data later. Judgements and punishments are logged for you.
+   - Outside messages, `cx.punish(user, reason)` punishes someone, `crate::ai::ask_noul` asks Jev
+     one question, and `cx.record_judgement(user, score, what_they_said)` logs its verdict.
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 
 Pull requests with new rules are welcome. CI runs `cargo fmt`, `clippy` and tests on every PR.
