@@ -3,10 +3,11 @@
 
 use poise::serenity_prelude::Message;
 
-use super::RuleScope;
+use poise::serenity_prelude::UserId;
+
+use super::{Enforcement, RuleScope};
 use crate::ai::jev::{Image, noul};
 use crate::ai::{self, Judge};
-use crate::stats::FESTIVE;
 
 /// Whether the message was just posted or its author just changed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,8 +80,10 @@ impl Breach<'_> {
         format!("{} (jev {:.2})", self.check.reply, self.score)
     }
 
-    pub fn reason(&self) -> String {
-        format!("{} (jev {:.2})", self.check.reason, self.score)
+    /// What happens to `author` for it.
+    pub fn enforcement(&self, author: UserId) -> Enforcement {
+        self.scope
+            .enforcement(author, Some(self.score), self.check.reason)
     }
 }
 
@@ -125,10 +128,7 @@ pub async fn judge_message<'a>(
     for (scope, check) in asked {
         match answers.as_ref().map(|a| a.noul(scope.rule.id())) {
             Some(Ok(score)) => {
-                scope
-                    .record_judgement(m.msg.author.id, score, m.said())
-                    .await;
-                if score < FESTIVE {
+                if !scope.judged(m.msg.author.id, score, m.said()).await {
                     breaches.push(Breach {
                         scope,
                         check,
@@ -167,7 +167,8 @@ pub(crate) mod tests {
     use crate::ai::jev::{Answer, Answers, Question};
     use crate::app::{Data, Inner};
     use crate::config::Config;
-    use crate::db::Db;
+    use crate::db::{Db, RuleRow};
+    use crate::rules::{Enforcement, Threshold};
 
     const GUILD: GuildId = GuildId::new(1);
 
@@ -244,6 +245,13 @@ pub(crate) mod tests {
             last_presence: Default::default(),
             started_at: chrono::Utc::now(),
         })
+    }
+
+    /// Change `rule`'s config in [`GUILD`].
+    pub(crate) async fn configure(data: &Data, rule: &str, change: impl FnOnce(&mut RuleRow)) {
+        let mut row = data.db.rule(GUILD.get(), rule).await.unwrap();
+        change(&mut row);
+        data.db.save_rule(&row).await.unwrap();
     }
 
     pub(crate) fn message(id: u64, author: u64, content: &str) -> Message {
@@ -473,5 +481,122 @@ pub(crate) mod tests {
                 ("sign_off".to_owned(), Some(7), true)
             ]
         );
+    }
+
+    async fn judged_logs(data: &Data) -> Vec<(String, Value)> {
+        let logged = data
+            .db
+            .activity(GUILD.get(), crate::stats::Period::All, 0, 10)
+            .await
+            .unwrap();
+        let mut judged: Vec<_> = logged
+            .into_iter()
+            .filter(|r| r.kind == crate::stats::kind::JUDGED)
+            .map(|r| (r.rule_id.unwrap(), serde_json::from_str(&r.data).unwrap()))
+            .collect();
+        judged.sort_by(|a, b| a.0.cmp(&b.0));
+        judged
+    }
+
+    #[tokio::test]
+    async fn a_rules_own_threshold_decides_whether_a_score_breaks_it() {
+        let data = data(&["sign_off"]).await;
+        configure(&data, "sign_off", |r| r.threshold = Threshold::new(0.3)).await;
+        let msg = message(1, 7, "hello");
+        let just_above = FakeJudge::answering(0.31);
+        assert!(
+            broken_rules(&data, &just_above, &msg, MsgKind::Posted)
+                .await
+                .is_empty()
+        );
+        let just_below = FakeJudge::answering(0.29);
+        assert_eq!(
+            broken_rules(&data, &just_below, &msg, MsgKind::Posted).await,
+            vec!["sign_off"]
+        );
+    }
+
+    #[tokio::test]
+    async fn rules_without_a_threshold_use_the_default() {
+        let data = data(&["sign_off"]).await;
+        let msg = message(1, 7, "hello");
+        let at = FakeJudge::answering(crate::stats::FESTIVE);
+        assert!(
+            broken_rules(&data, &at, &msg, MsgKind::Posted)
+                .await
+                .is_empty()
+        );
+        let below = FakeJudge::answering(crate::stats::FESTIVE - 0.01);
+        assert_eq!(
+            broken_rules(&data, &below, &msg, MsgKind::Posted).await,
+            vec!["sign_off"]
+        );
+    }
+
+    #[tokio::test]
+    async fn verdicts_are_logged_against_each_rules_effective_threshold() {
+        let data = data(&["first_message", "sign_off"]).await;
+        configure(&data, "sign_off", |r| r.threshold = Threshold::new(0.3)).await;
+        let judge = FakeJudge::answering(0.4);
+        broken_rules(&data, &judge, &message(1, 7, "hello"), MsgKind::Posted).await;
+        let logged: Vec<_> = judged_logs(&data)
+            .await
+            .into_iter()
+            .map(|(rule, d)| {
+                (
+                    rule,
+                    d["threshold"].as_f64().unwrap() as f32,
+                    d["festive"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            logged,
+            vec![
+                (
+                    "first_message".to_owned(),
+                    crate::stats::FESTIVE,
+                    Value::Bool(false)
+                ),
+                ("sign_off".to_owned(), 0.3, Value::Bool(true)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shadowed_rule_reports_what_would_have_happened_instead_of_punishing() {
+        let data = data(&["first_message", "sign_off"]).await;
+        configure(&data, "sign_off", |r| r.shadow = true).await;
+        let judge = FakeJudge::answering(0.31);
+        let scopes = RuleScope::enabled(&data, GUILD).await.unwrap();
+        let msg = message(1, 7, "hello");
+        let judge: &dyn Judge = judge.as_ref();
+        let breaches = judge_message(Some(judge), &scopes, &Msg::new(&msg, MsgKind::Posted)).await;
+        let mut outcomes: Vec<_> = breaches
+            .iter()
+            .map(|b| (b.scope.rule.id(), b.enforcement(UserId::new(7))))
+            .collect();
+        outcomes.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            outcomes,
+            vec![
+                (
+                    "first_message",
+                    Enforcement::Punish(
+                        "first message of the day wasn't festive (jev 0.31)".to_owned()
+                    )
+                ),
+                (
+                    "sign_off",
+                    Enforcement::Report(
+                        "👻 [shadow] <@7> would have broken **sign_off** (score 0.31, threshold \
+                         0.50): message didn't end with a Christmas greeting"
+                            .to_owned()
+                    )
+                ),
+            ]
+        );
+        // Shadowed or not, the verdict is logged.
+        assert_eq!(judged_logs(&data).await.len(), 2);
     }
 }
