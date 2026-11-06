@@ -11,9 +11,6 @@ use serde_json::{Value, json};
 use crate::app::Data;
 use jev::{Answers, Image, Jev, Question, normalize_image, noul};
 
-/// A yes/no answer (noul) at or above this counts as "yes". The one place it's decided.
-pub const YES: f32 = 0.5;
-
 /// Answers named questions about some `state` (plus images it references) in one request.
 /// [`Jev`] in production; a fake in tests.
 #[async_trait]

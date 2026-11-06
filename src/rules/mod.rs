@@ -16,6 +16,7 @@ use poise::serenity_prelude::{self as serenity, ChannelId, GuildId, Member, Onli
 use crate::app::Data;
 use crate::db::RuleRow;
 use crate::punish::{self, Punishment};
+use crate::stats::{self, Log};
 
 pub use chat::{MessageCheck, Msg, MsgKind, judge_message};
 
@@ -118,12 +119,35 @@ impl RuleScope {
 
     pub fn punishment(&self) -> Punishment {
         self.row
-            .punishment()
+            .punishment
             .unwrap_or_else(|| self.rule.default_punishment())
     }
 
-    pub fn today(&self) -> NaiveDate {
-        self.data.today()
+    /// "Today" in this guild's timezone.
+    pub async fn today(&self) -> Result<NaiveDate> {
+        self.data.today(self.guild_id).await
+    }
+
+    /// Log something that happened to `user` in the activity log, tagged with this rule, for
+    /// end-of-month leaderboards. `data` is anything serializable, usually `json!({...})`.
+    /// Log generously: it's cheap and you can't go back for it later. Never fails.
+    pub async fn log(&self, user: UserId, kind: &'static str, data: impl serde::Serialize) {
+        let log = Log::new(kind, data)
+            .user(user)
+            .rule(self.rule.id())
+            .enforced(Some(true));
+        stats::record(&self.data, self.guild_id, log).await
+    }
+
+    /// Log a Jev verdict and what was judged. Called whenever the rule judges something,
+    /// festive or not (for chat messages, [`judge_message`] does it).
+    pub async fn record_judgement(&self, user: UserId, score: f32, said: &str) {
+        let data = serde_json::json!({
+            "score": score,
+            "said": said,
+            "festive": score >= stats::FESTIVE,
+        });
+        self.log(user, stats::kind::JUDGED, data).await
     }
 
     pub async fn state<T: serde::de::DeserializeOwned>(
@@ -134,18 +158,6 @@ impl RuleScope {
         self.data
             .db
             .state(self.guild_id.get(), self.rule.id(), user.get(), key)
-            .await
-    }
-
-    pub async fn set_state<T: serde::Serialize>(
-        &self,
-        user: UserId,
-        key: &str,
-        v: &T,
-    ) -> Result<()> {
-        self.data
-            .db
-            .set_state(self.guild_id.get(), self.rule.id(), user.get(), key, v)
             .await
     }
 

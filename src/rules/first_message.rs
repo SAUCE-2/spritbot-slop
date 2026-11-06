@@ -65,7 +65,7 @@ impl Rule for FirstMessage {
         let user = m.msg.author.id;
         let seen: Option<Judged> = s.state(user, JUDGED).await?;
         let this = Judged {
-            day: s.today(),
+            day: s.today().await?,
             message: m.msg.id,
         };
         Ok(match m.kind {

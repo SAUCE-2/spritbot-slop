@@ -11,8 +11,12 @@ use crate::app::Data;
 use crate::punish;
 use crate::rules::{Msg, MsgKind, RuleCx, RuleScope, judge_message};
 use crate::setup;
+use crate::stats::{self, Log, kind};
+use serde_json::json;
 
 pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> Result<()> {
+    // Log everything first, whatever the rules then do with it.
+    stats::capture::capture(ctx, event, data).await;
     match event {
         FullEvent::GuildCreate { guild, .. } => spawn_report(ctx, data, guild.id),
         FullEvent::GuildRoleDelete { guild_id, .. } => spawn_report(ctx, data, *guild_id),
@@ -48,6 +52,10 @@ pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> 
             };
             if let Some(until) = data.db.timed_out(guild_id.get(), new.user_id.get()).await? {
                 punish::disconnect(ctx, guild_id, new.user_id, "SpiritBot: timed out").await?;
+                let log = Log::new(kind::TIMEOUT_VC, json!({ "until": until }))
+                    .user(new.user_id)
+                    .channel(ch);
+                stats::record(data, guild_id, log).await;
                 let dm = serenity::CreateMessage::new().content(timeout_notice(new.user_id, until));
                 new.user_id.direct_message(ctx, dm).await.ok();
                 return Ok(());
@@ -127,6 +135,13 @@ async fn on_chat(ctx: &serenity::Context, data: &Data, msg: &Message, kind: MsgK
         .await?
     {
         msg.delete(ctx).await.ok();
+        let log = Log::new(
+            kind::TIMEOUT_MESSAGE,
+            json!({ "message_id": msg.id, "content": msg.content, "until": until }),
+        )
+        .user(msg.author.id)
+        .channel(msg.channel_id);
+        stats::record(data, guild_id, log).await;
         // Self-deleting, so a timed-out spammer doesn't flood the channel with notices.
         if let Ok(notice) = msg
             .channel_id

@@ -6,6 +6,7 @@ use poise::serenity_prelude::Message;
 use super::RuleScope;
 use crate::ai::jev::{Image, noul};
 use crate::ai::{self, Judge};
+use crate::stats::FESTIVE;
 
 /// Whether the message was just posted or its author just changed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +36,14 @@ impl<'a> Msg<'a> {
             .get_or_init(|| ai::message_images(self.msg))
             .await
             .clone()
+    }
+
+    /// What was judged, for the activity log.
+    pub fn said(&self) -> &str {
+        match self.msg.content.trim() {
+            "" => "(image/GIF)",
+            _ => &self.msg.content,
+        }
     }
 
     /// Nothing to judge: no text and no images (e.g. a sticker or an embed-only message).
@@ -115,12 +124,18 @@ pub async fn judge_message<'a>(
     let mut breaches = Vec::new();
     for (scope, check) in asked {
         match answers.as_ref().map(|a| a.noul(scope.rule.id())) {
-            Some(Ok(score)) if score < ai::YES => breaches.push(Breach {
-                scope,
-                check,
-                score,
-            }),
-            Some(Ok(_)) => {}
+            Some(Ok(score)) => {
+                scope
+                    .record_judgement(m.msg.author.id, score, m.said())
+                    .await;
+                if score < FESTIVE {
+                    breaches.push(Breach {
+                        scope,
+                        check,
+                        score,
+                    });
+                }
+            }
             unanswered => {
                 if let Some(Err(e)) = unanswered {
                     log_err(scope, e);
@@ -195,7 +210,6 @@ pub(crate) mod tests {
                 bail!("judge is down")
             };
             Ok(Answers {
-                model: "fake".into(),
                 answers: names
                     .into_iter()
                     .map(|n| (n.to_owned(), Answer::Noul { noul }))
@@ -226,6 +240,8 @@ pub(crate) mod tests {
             stt: None,
             judge: None,
             voice: Default::default(),
+            vc_sessions: Default::default(),
+            last_presence: Default::default(),
             started_at: chrono::Utc::now(),
         })
     }
@@ -420,5 +436,42 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(judge.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn every_answer_is_logged_as_a_judgement() {
+        let data = data(&["first_message", "sign_off"]).await;
+        let judge = FakeJudge::answering(0.9);
+        broken_rules(
+            &data,
+            &judge,
+            &message(1, 7, "Merry Christmas!"),
+            MsgKind::Posted,
+        )
+        .await;
+        let logged = data
+            .db
+            .activity(GUILD.get(), crate::stats::Period::All, 0, 10)
+            .await
+            .unwrap();
+        let mut judged: Vec<_> = logged
+            .iter()
+            .filter(|r| r.kind == crate::stats::kind::JUDGED)
+            .map(|r| {
+                (
+                    r.rule_id.clone().unwrap(),
+                    r.user_id,
+                    r.data.contains("Merry Christmas!"),
+                )
+            })
+            .collect();
+        judged.sort();
+        assert_eq!(
+            judged,
+            vec![
+                ("first_message".to_owned(), Some(7), true),
+                ("sign_off".to_owned(), Some(7), true)
+            ]
+        );
     }
 }
