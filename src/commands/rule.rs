@@ -106,6 +106,13 @@ async fn disable(ctx: Ctx<'_>, #[autocomplete = "autocomplete_rule"] rule: Strin
     row.enabled = false;
     row.start_date = None;
     data.db.save_rule(&row).await?;
+    let by = ctx.author().id.to_string();
+    let mut log = crate::stats::Log::new(
+        crate::stats::kind::RULE_DISABLED,
+        serde_json::json!({ "by": by }),
+    );
+    log.rule = data.rule(&rule).map(|r| r.id());
+    crate::stats::record(data, guild_id, log).await;
     reply(ctx, format!("⚫ `{rule}` is off.")).await
 }
 

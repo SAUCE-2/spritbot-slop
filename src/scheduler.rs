@@ -29,6 +29,13 @@ pub async fn activate(
     row.start_date = None;
     row.activated_at = Some(chrono::Utc::now());
     data.db.save_rule(&row).await?;
+    let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
+    let log = crate::stats::Log::new(
+        crate::stats::kind::RULE_ACTIVATED,
+        serde_json::json!({ "name": rule.name(), "punishment": punishment }),
+    )
+    .rule(rule.id());
+    crate::stats::record(data, guild_id, log).await;
     announce(ctx, data, guild_id, rule.as_ref(), &row).await;
     Ok(Ok(()))
 }

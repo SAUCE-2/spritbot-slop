@@ -9,9 +9,15 @@ use serde_json::json;
 
 use super::{Need, Rule, RuleCx};
 use crate::punish::Punishment;
+use crate::stats::FESTIVE;
 use crate::voice::listener::Outcome;
 
 const WINDOW: Duration = Duration::from_secs(10);
+
+/// Activity log kinds: what they said (`{heard}`) / said nothing / left before the window ended.
+const HEARD: &str = "vc_greeting_heard";
+const SILENT: &str = "vc_greeting_silent";
+const FLED: &str = "vc_greeting_left";
 
 const QUESTION: &str = "The state is a speech-to-text transcript of what someone said in the first \
     10 seconds after joining a Discord voice call. The transcript may contain mishearings. Did they \
@@ -44,7 +50,6 @@ impl Rule for VcGreeting {
     fn needs(&self) -> &'static [Need] {
         &[Need::Whisper, Need::Jev]
     }
-
     async fn on_voice_join(&self, cx: &RuleCx, member: &Member, channel: ChannelId) -> Result<()> {
         // Listening takes 10s+, so don't hold up other rules' handling of this event.
         let (cx, user) = (cx.clone(), member.user.id);
@@ -64,8 +69,15 @@ async fn judge(cx: &RuleCx, user: UserId, channel: ChannelId) -> Result<()> {
         .listen(&cx.ctx, &cx.data, cx.guild_id, channel, user, WINDOW)
         .await
     {
-        Outcome::Heard(text) => text,
-        Outcome::Left => return Ok(()),
+        Outcome::Heard(text) => {
+            let data = json!({ "heard": text, "channel_id": channel });
+            cx.log(user, HEARD, data).await;
+            text
+        }
+        Outcome::Left => {
+            cx.log(user, FLED, json!({ "channel_id": channel })).await;
+            return Ok(());
+        }
         Outcome::Failed(e) => {
             // Our fault, not theirs: don't punish.
             tracing::warn!(guild_id = %cx.guild_id, %user, "vc_greeting listen failed: {e}");
@@ -74,6 +86,7 @@ async fn judge(cx: &RuleCx, user: UserId, channel: ChannelId) -> Result<()> {
     };
 
     let reason = if heard.is_empty() {
+        cx.log(user, SILENT, json!({ "channel_id": channel })).await;
         "didn't say anything festive within 10s of joining VC".to_owned()
     } else {
         let Some(score) =
@@ -81,7 +94,8 @@ async fn judge(cx: &RuleCx, user: UserId, channel: ChannelId) -> Result<()> {
         else {
             return Ok(()); // Jev failed: don't punish
         };
-        if score >= 0.5 {
+        cx.record_judgement(user, score, &heard).await;
+        if score >= FESTIVE {
             return Ok(());
         }
         format!("VC greeting wasn't festive: \"{heard}\" (jev {score:.2})")

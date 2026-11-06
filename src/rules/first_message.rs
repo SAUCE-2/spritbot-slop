@@ -6,6 +6,7 @@ use chrono::NaiveDate;
 
 use super::{Msg, Need, Rule, RuleCx};
 use crate::punish::Punishment;
+use crate::stats::FESTIVE;
 
 /// State key: the last day (bot timezone) this user's first message was judged.
 const LAST_DAY: &str = "last_day";
@@ -55,7 +56,13 @@ impl Rule for FirstMessage {
             cx.clear_state(user).await?;
             return Ok(());
         };
-        if score < 0.5 {
+        let said = if msg.msg.content.trim().is_empty() {
+            "(image/GIF)"
+        } else {
+            &msg.msg.content
+        };
+        cx.record_judgement(user, score, said).await;
+        if score < FESTIVE {
             msg.msg
                 .reply(
                     &cx.ctx,

@@ -1,7 +1,3 @@
-// The rule framework (voice listening, per-user state, Jev helpers) has no callers
-// until daily rules are added to `rules::registry()`. Remove this once the first rules land.
-#![allow(dead_code)]
-
 mod ai;
 mod app;
 mod commands;
@@ -12,6 +8,7 @@ mod punish;
 mod rules;
 mod scheduler;
 mod setup;
+mod stats;
 mod voice;
 
 use anyhow::Result;
@@ -55,6 +52,8 @@ async fn main() -> Result<()> {
         stt,
         jev,
         voice: Default::default(),
+        vc_sessions: Default::default(),
+        last_presence: Default::default(),
         started_at: chrono::Utc::now(),
     });
 

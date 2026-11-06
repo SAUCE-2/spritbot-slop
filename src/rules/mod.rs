@@ -17,6 +17,7 @@ use crate::ai::jev::Image;
 use crate::app::Data;
 use crate::db::RuleRow;
 use crate::punish::{self, Punishment};
+use crate::stats::{self, Log};
 
 /// Every rule, in display order. Add each new daily rule here (one file per rule in this folder).
 pub fn registry() -> Vec<Arc<dyn Rule>> {
@@ -146,6 +147,28 @@ impl RuleCx {
         let images = m.images().await;
         let state = crate::ai::message_state(&m.msg.content, &images);
         crate::ai::ask_noul(&self.data, state, images, question, criteria).await
+    }
+
+    /// Log something that happened to `user` in the activity log, tagged with this rule, for
+    /// end-of-month leaderboards. `data` is anything serializable, usually `json!({...})`.
+    /// Log generously: it's cheap and you can't go back for it later. Never fails.
+    pub async fn log(&self, user: UserId, kind: &'static str, data: impl serde::Serialize) {
+        let log = Log::new(kind, data)
+            .user(user)
+            .rule(self.rule.id())
+            .enforced(Some(true));
+        stats::record(&self.data, self.guild_id, log).await
+    }
+
+    /// Log a Jev verdict and what was judged. Call this whenever the rule judges something,
+    /// festive or not.
+    pub async fn record_judgement(&self, user: UserId, score: f32, said: &str) {
+        let data = serde_json::json!({
+            "score": score,
+            "said": said,
+            "festive": score >= stats::FESTIVE,
+        });
+        self.log(user, stats::kind::JUDGED, data).await
     }
 
     /// "Today" in this guild's timezone.
