@@ -134,6 +134,11 @@ The log holds message content, so treat the export and the database as private.
 ### 2. Run it
 
 You need Docker with Compose. A prebuilt image is published at `ghcr.io/sauce-2/spritbot-slop:latest`.
+Every merge to `main` is also a [semantic version](https://semver.org) release, tagged `X.Y.Z`,
+`X.Y` and `X` (e.g. `:1`). The bump comes from the
+[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) since the last release: `!`
+or `BREAKING CHANGE:` is a major, `feat` is a minor and anything else is a patch. Pin a major tag to
+get updates without breaking changes. `/status` shows the running version.
 
 ```bash
 mkdir spiritbot && cd spiritbot

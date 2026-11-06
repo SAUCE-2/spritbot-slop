@@ -13,7 +13,9 @@ COPY --from=planner /app/recipe.json recipe.json
 # Dependencies (incl. whisper.cpp) are cached in this layer until Cargo.toml/lock change.
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-# Baked into `/status`; CI passes the commit SHA (`.git` isn't in the build context).
+# Baked into `/status`; CI passes the release's git tag and the commit SHA (`.git` isn't in the
+# build context).
+ARG SPIRITBOT_VERSION
 ARG GIT_SHA
 RUN cargo build --release
 
