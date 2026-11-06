@@ -11,6 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRo
 
 use crate::config::local_date;
 use crate::punish::Punishment;
+use crate::rules::Threshold;
 
 #[derive(Clone)]
 pub struct Db(pub SqlitePool);
@@ -62,6 +63,10 @@ pub struct RuleRow {
     /// Pending scheduled activation, in the guild's timezone.
     pub start_date: Option<NaiveDate>,
     pub activated_at: Option<DateTime<Utc>>,
+    /// `None` = [`Threshold::DEFAULT`].
+    pub threshold: Option<Threshold>,
+    /// Judge as usual, but only report would-be breaches to the log channel.
+    pub shadow: bool,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for RuleRow {
@@ -73,8 +78,26 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for RuleRow {
             punishment: parse_column(row, "punishment", |s| serde_json::from_str(s).ok())?,
             start_date: parse_column(row, "start_date", |s| s.parse().ok())?,
             activated_at: parse_column(row, "activated_at", parse_time)?,
+            threshold: parse_threshold(row)?,
+            shadow: row.try_get("shadow")?,
         })
     }
+}
+
+/// Read the threshold column; like [`parse_column`], a value outside 0..=1 is logged and unset.
+fn parse_threshold(row: &SqliteRow) -> sqlx::Result<Option<Threshold>> {
+    let raw: Option<f64> = row.try_get("threshold")?;
+    Ok(raw.and_then(|value| {
+        let parsed = Threshold::new(value as f32);
+        if parsed.is_none() {
+            tracing::warn!(
+                column = "threshold",
+                value,
+                "ignoring out-of-range stored value"
+            );
+        }
+        parsed
+    }))
 }
 
 /// Read an optional text column and parse it. A value that doesn't parse is logged and
@@ -103,6 +126,8 @@ impl RuleRow {
             punishment: None,
             start_date: None,
             activated_at: None,
+            threshold: None,
+            shadow: false,
         }
     }
 }
@@ -273,18 +298,26 @@ impl Db {
 
     pub async fn save_rule(&self, r: &RuleRow) -> Result<()> {
         sqlx::query(
-            "INSERT INTO rule_config (guild_id, rule_id, enabled, punishment, start_date, activated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO rule_config
+               (guild_id, rule_id, enabled, punishment, start_date, activated_at, threshold, shadow)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (guild_id, rule_id) DO UPDATE SET
                enabled = excluded.enabled, punishment = excluded.punishment,
-               start_date = excluded.start_date, activated_at = excluded.activated_at",
+               start_date = excluded.start_date, activated_at = excluded.activated_at,
+               threshold = excluded.threshold, shadow = excluded.shadow",
         )
         .bind(r.guild_id)
         .bind(&r.rule_id)
         .bind(r.enabled)
-        .bind(r.punishment.map(|p| serde_json::to_string(&p)).transpose()?)
+        .bind(
+            r.punishment
+                .map(|p| serde_json::to_string(&p))
+                .transpose()?,
+        )
         .bind(r.start_date.map(|d| d.to_string()))
         .bind(r.activated_at.map(fmt_time))
+        .bind(r.threshold.map(|t| f64::from(t.get())))
+        .bind(r.shadow)
         .execute(&self.0)
         .await?;
         Ok(())
@@ -646,6 +679,34 @@ mod tests {
             (r.punishment, r.start_date, r.activated_at),
             (None, None, None)
         );
+    }
+
+    #[tokio::test]
+    async fn rule_thresholds_and_shadow_mode_round_trip_and_default_to_unset_and_off() {
+        let db = db().await;
+        let mut r = db.rule(1, "a").await.unwrap();
+        assert_eq!((r.threshold, r.shadow), (None, false));
+        db.save_rule(&r).await.unwrap();
+        let back = db.rule(1, "a").await.unwrap();
+        assert_eq!((back.threshold, back.shadow), (None, false));
+
+        r.threshold = Threshold::new(0.35);
+        r.shadow = true;
+        db.save_rule(&r).await.unwrap();
+        let back = db.rule(1, "a").await.unwrap();
+        assert_eq!((back.threshold, back.shadow), (Threshold::new(0.35), true));
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_stored_threshold_loads_as_the_default() {
+        let db = db().await;
+        sqlx::query(
+            "INSERT INTO rule_config (guild_id, rule_id, enabled, threshold) VALUES (1, 'a', 1, 7.5)",
+        )
+        .execute(&db.0)
+        .await
+        .unwrap();
+        assert_eq!(db.rule(1, "a").await.unwrap().threshold, None);
     }
 
     #[tokio::test]
