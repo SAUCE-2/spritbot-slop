@@ -3,6 +3,7 @@
 mod chat;
 mod first_message;
 mod sign_off;
+mod threshold;
 mod vc_greeting;
 
 use std::ops::Deref;
@@ -19,6 +20,7 @@ use crate::punish::{self, Punishment};
 use crate::stats::{self, Log};
 
 pub use chat::{MessageCheck, Msg, MsgKind, judge_message};
+pub use threshold::{Threshold, ThresholdSetting};
 
 /// Every rule, in display order. Add each new daily rule here (one file per rule in this folder).
 pub fn registry() -> Vec<Arc<dyn Rule>> {
