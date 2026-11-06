@@ -3,8 +3,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use super::{Msg, Need, Rule, RuleCx};
+use super::{MessageCheck, Msg, Need, Rule, RuleScope};
 use crate::punish::Punishment;
+
+const CHECK: MessageCheck = MessageCheck {
+    question: QUESTION,
+    yes: YES,
+    no: NO,
+    reply: "Every message has to end with a Christmas greeting! Merry Christmas!",
+    reason: "message didn't end with a Christmas greeting",
+};
 
 const QUESTION: &str = "The state is a Discord chat message, possibly with attached images. Does \
     it end with a Christmas greeting, as its sign-off?";
@@ -40,32 +48,8 @@ impl Rule for SignOff {
         &[Need::Jev]
     }
 
-    async fn on_message(&self, cx: &RuleCx, msg: &Msg<'_>) -> Result<()> {
-        // Nothing to judge (e.g. a sticker or an embed-only message): let it through.
-        if msg.msg.content.trim().is_empty() && msg.images().await.is_empty() {
-            return Ok(());
-        }
-        // Jev failed: don't punish.
-        let Some(score) = cx.ask_msg(msg, QUESTION, Some((YES, NO))).await else {
-            return Ok(());
-        };
-        if score < 0.5 {
-            msg.msg
-                .reply(
-                    &cx.ctx,
-                    format!(
-                        "Every message has to end with a Christmas greeting! (jev {score:.2}) \
-                         Merry Christmas!"
-                    ),
-                )
-                .await
-                .ok();
-            cx.punish(
-                msg.msg.author.id,
-                &format!("message didn't end with a Christmas greeting (jev {score:.2})"),
-            )
-            .await?;
-        }
-        Ok(())
+    /// Judges every message, and every edit to one.
+    async fn message_check(&self, _s: &RuleScope, m: &Msg<'_>) -> Result<Option<MessageCheck>> {
+        Ok((!m.is_blank().await).then_some(CHECK))
     }
 }

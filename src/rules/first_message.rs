@@ -4,11 +4,19 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 
-use super::{Msg, Need, Rule, RuleCx};
+use super::{MessageCheck, Msg, MsgKind, Need, Rule, RuleScope};
 use crate::punish::Punishment;
 
 /// State key: the last day (bot timezone) this user's first message was judged.
 const LAST_DAY: &str = "last_day";
+
+const CHECK: MessageCheck = MessageCheck {
+    question: QUESTION,
+    yes: YES,
+    no: NO,
+    reply: "Your first message today has to be festive!",
+    reason: "first message of the day wasn't festive",
+};
 
 const QUESTION: &str = "The state is someone's first Discord chat message of the day, possibly \
     with attached images. Is it festive, in the Christmas spirit?";
@@ -41,34 +49,22 @@ impl Rule for FirstMessage {
         &[Need::Jev]
     }
 
-    async fn on_message(&self, cx: &RuleCx, msg: &Msg<'_>) -> Result<()> {
-        let user = msg.msg.author.id;
-        let today = cx.today();
-        if cx.state::<NaiveDate>(user, LAST_DAY).await? == Some(today) {
-            return Ok(());
+    async fn message_check(&self, s: &RuleScope, m: &Msg<'_>) -> Result<Option<MessageCheck>> {
+        if m.kind == MsgKind::Edited {
+            return Ok(None);
+        }
+        let user = m.msg.author.id;
+        let today = s.today();
+        if s.state::<NaiveDate>(user, LAST_DAY).await? == Some(today) {
+            return Ok(None);
         }
         // Mark before asking so only the first message of the day counts.
-        cx.set_state(user, LAST_DAY, &today).await?;
+        s.set_state(user, LAST_DAY, &today).await?;
+        Ok(Some(CHECK))
+    }
 
-        let Some(score) = cx.ask_msg(msg, QUESTION, Some((YES, NO))).await else {
-            // Jev failed: don't punish, judge their next message instead.
-            cx.clear_state(user).await?;
-            return Ok(());
-        };
-        if score < 0.5 {
-            msg.msg
-                .reply(
-                    &cx.ctx,
-                    format!("Your first message today has to be festive! (jev {score:.2})"),
-                )
-                .await
-                .ok();
-            cx.punish(
-                user,
-                &format!("first message of the day wasn't festive (jev {score:.2})"),
-            )
-            .await?;
-        }
-        Ok(())
+    /// The judge failed: don't punish, judge their next message instead.
+    async fn message_unjudged(&self, s: &RuleScope, m: &Msg<'_>) -> Result<()> {
+        s.clear_state(m.msg.author.id).await
     }
 }

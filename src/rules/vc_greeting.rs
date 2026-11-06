@@ -81,7 +81,7 @@ async fn judge(cx: &RuleCx, user: UserId, channel: ChannelId) -> Result<()> {
         else {
             return Ok(()); // Jev failed: don't punish
         };
-        if score >= 0.5 {
+        if score >= crate::ai::YES {
             return Ok(());
         }
         format!("VC greeting wasn't festive: \"{heard}\" (jev {score:.2})")

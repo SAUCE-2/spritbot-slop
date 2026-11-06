@@ -7,7 +7,7 @@ use poise::serenity_prelude::{self as serenity, FullEvent, GuildId, Message, Rol
 
 use crate::app::Data;
 use crate::punish;
-use crate::rules::{Msg, RuleCx};
+use crate::rules::{Msg, MsgKind, RuleCx, RuleScope, judge_message};
 use crate::setup;
 
 pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> Result<()> {
@@ -107,10 +107,26 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         return Ok(());
     }
 
-    let m = Msg::new(msg);
+    judge_chat(ctx, data, guild_id, &Msg::new(msg, MsgKind::Posted)).await
+}
 
-    for cx in enabled_rules(ctx, data, guild_id).await? {
-        log_err(&cx, cx.rule.on_message(&cx, &m).await);
+/// One judge call answers every enabled rule's check on the message; then each broken rule
+/// replies and punishes.
+async fn judge_chat(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: GuildId,
+    m: &Msg<'_>,
+) -> Result<()> {
+    let scopes = RuleScope::enabled(data, guild_id).await?;
+    for breach in judge_message(data.judge.as_deref(), &scopes, m).await {
+        m.msg.reply(ctx, breach.reply()).await.ok();
+        let cx = RuleCx {
+            ctx: ctx.clone(),
+            scope: breach.scope.clone(),
+        };
+        let punished = cx.punish(m.msg.author.id, &breach.reason()).await;
+        log_err(&cx, punished.map(drop));
     }
     Ok(())
 }
@@ -148,20 +164,12 @@ async fn enabled_rules(
     data: &Data,
     guild_id: GuildId,
 ) -> Result<Vec<RuleCx>> {
-    Ok(data
-        .db
-        .enabled_rules(guild_id.get())
+    Ok(RuleScope::enabled(data, guild_id)
         .await?
         .into_iter()
-        .filter_map(|row| {
-            let rule = data.rule(&row.rule_id)?;
-            Some(RuleCx {
-                ctx: ctx.clone(),
-                data: data.clone(),
-                guild_id,
-                row,
-                rule,
-            })
+        .map(|scope| RuleCx {
+            ctx: ctx.clone(),
+            scope,
         })
         .collect())
 }
