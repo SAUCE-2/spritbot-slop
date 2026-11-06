@@ -62,7 +62,7 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit timezone <tz>` | Set the server's timezone (IANA name like `America/New_York`, or `default` for `BOT_TZ`), which decides when "today" starts for daily rules and schedules |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
-| `/status` | Bot uptime, gateway latency, memory, and rule/punishment stats |
+| `/status` | Bot uptime, gateway latency and memory, plus this server's rule and punishment stats |
 | `/stats summary [month]` | How much has been logged, by kind |
 | `/stats export [month]` | Download the activity log as gzipped JSON Lines |
 | `/stats wipe confirm:true [user]` | Delete logged activity, e.g. after testing |

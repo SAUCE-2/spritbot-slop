@@ -40,14 +40,13 @@ pub async fn status(ctx: Ctx<'_>) -> Result<()> {
         on_off(data.judge.is_some()),
     );
 
-    let all = data.db.punishment_stats(None).await?;
     let mut embed = CreateEmbed::new()
         .title("🤖 Bot status")
         .description(bot)
         .colour(0x27ae60);
 
     if let Some(guild_id) = ctx.guild_id() {
-        let here = data.db.punishment_stats(Some(guild_id.get())).await?;
+        let here = data.db.punishment_stats(guild_id.get()).await?;
         let enabled = data.db.enabled_rules(guild_id.get()).await?.len();
         embed = embed.field(
             "This server",
@@ -61,17 +60,6 @@ pub async fn status(ctx: Ctx<'_>) -> Result<()> {
             true,
         );
     }
-    embed = embed.field(
-        "All servers",
-        format!(
-            "Rules available: {}\nPunishments: {} ({} in 24h)\nTimed out now: {}",
-            data.rules.len(),
-            all.total,
-            all.last_day,
-            all.active_timeouts,
-        ),
-        true,
-    );
 
     ctx.send(CreateReply::default().embed(embed).ephemeral(true))
         .await?;
