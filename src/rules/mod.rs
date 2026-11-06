@@ -119,7 +119,7 @@ impl RuleCx {
 
     pub fn punishment(&self) -> Punishment {
         self.row
-            .punishment()
+            .punishment
             .unwrap_or_else(|| self.rule.default_punishment())
     }
 

@@ -5,7 +5,8 @@ use std::str::FromStr;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::de::DeserializeOwned;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 
 use crate::punish::Punishment;
 
@@ -27,14 +28,47 @@ pub enum GuildField {
     LogChannel,
 }
 
-#[derive(Clone, Debug, sqlx::FromRow)]
+/// One rule's settings in one guild, parsed from its stored text once at load time.
+#[derive(Clone, Debug)]
 pub struct RuleRow {
     pub guild_id: i64,
     pub rule_id: String,
     pub enabled: bool,
-    pub punishment: Option<String>,
-    pub start_date: Option<String>,
-    pub activated_at: Option<String>,
+    /// `None` = the rule's default punishment.
+    pub punishment: Option<Punishment>,
+    /// Pending scheduled activation, in the guild's timezone.
+    pub start_date: Option<NaiveDate>,
+    pub activated_at: Option<DateTime<Utc>>,
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for RuleRow {
+    fn from_row(row: &'r SqliteRow) -> sqlx::Result<Self> {
+        Ok(Self {
+            guild_id: row.try_get("guild_id")?,
+            rule_id: row.try_get("rule_id")?,
+            enabled: row.try_get("enabled")?,
+            punishment: parse_column(row, "punishment", |s| serde_json::from_str(s).ok())?,
+            start_date: parse_column(row, "start_date", |s| s.parse().ok())?,
+            activated_at: parse_column(row, "activated_at", parse_time)?,
+        })
+    }
+}
+
+/// Read an optional text column and parse it. A value that doesn't parse is logged and
+/// treated as unset, so one corrupt cell can't take every rule in the bot down with it.
+fn parse_column<T>(
+    row: &SqliteRow,
+    column: &str,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> sqlx::Result<Option<T>> {
+    let raw: Option<String> = row.try_get(column)?;
+    Ok(raw.and_then(|text| {
+        let parsed = parse(&text);
+        if parsed.is_none() {
+            tracing::warn!(column, value = %text, "ignoring unparseable stored value");
+        }
+        parsed
+    }))
 }
 
 impl RuleRow {
@@ -47,16 +81,6 @@ impl RuleRow {
             start_date: None,
             activated_at: None,
         }
-    }
-
-    pub fn punishment(&self) -> Option<Punishment> {
-        self.punishment
-            .as_deref()
-            .and_then(|p| serde_json::from_str(p).ok())
-    }
-
-    pub fn start_date(&self) -> Option<NaiveDate> {
-        self.start_date.as_deref().and_then(|d| d.parse().ok())
     }
 }
 
@@ -212,9 +236,9 @@ impl Db {
         .bind(r.guild_id)
         .bind(&r.rule_id)
         .bind(r.enabled)
-        .bind(&r.punishment)
-        .bind(&r.start_date)
-        .bind(&r.activated_at)
+        .bind(r.punishment.map(|p| serde_json::to_string(&p)).transpose()?)
+        .bind(r.start_date.map(|d| d.to_string()))
+        .bind(r.activated_at.map(fmt_time))
         .execute(&self.0)
         .await?;
         Ok(())
@@ -416,10 +440,10 @@ mod tests {
         let db = db().await;
         let mut r = db.rule(1, "a").await.unwrap();
         assert!(!r.enabled);
-        r.start_date = Some("2026-12-01".into());
-        r.punishment = Some(r#"{"kind":"disconnect"}"#.into());
-        db.save_rule(&r).await.unwrap();
         let today = |s: &str| s.parse::<NaiveDate>().unwrap();
+        r.start_date = Some(today("2026-12-01"));
+        r.punishment = Some(Punishment::Disconnect);
+        db.save_rule(&r).await.unwrap();
         assert!(
             db.due_scheduled(today("2026-11-30"))
                 .await
@@ -431,13 +455,64 @@ mod tests {
             1
         );
         assert_eq!(
-            db.rule(1, "a").await.unwrap().punishment(),
+            db.rule(1, "a").await.unwrap().punishment,
             Some(Punishment::Disconnect)
         );
         r.enabled = true;
         db.save_rule(&r).await.unwrap();
         assert_eq!(db.enabled_rules(1).await.unwrap().len(), 1);
         assert!(db.enabled_rules(2).await.unwrap().is_empty());
+    }
+
+    async fn raw_rule_columns(db: &Db) -> (Option<String>, Option<String>, Option<String>) {
+        sqlx::query_as("SELECT punishment, start_date, activated_at FROM rule_config")
+            .fetch_one(&db.0)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rule_rows_round_trip_typed_values_in_the_existing_text_format() {
+        let db = db().await;
+        let mut r = db.rule(1, "a").await.unwrap();
+        let at = parse_time("2026-12-01T09:30:00.000Z").unwrap();
+        r.punishment = Some(Punishment::Timeout { secs: 90 });
+        r.start_date = Some(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap());
+        r.activated_at = Some(at);
+        db.save_rule(&r).await.unwrap();
+
+        let back = db.rule(1, "a").await.unwrap();
+        assert_eq!(back.punishment, Some(Punishment::Timeout { secs: 90 }));
+        assert_eq!(back.start_date, NaiveDate::from_ymd_opt(2026, 12, 1));
+        assert_eq!(back.activated_at, Some(at));
+        assert_eq!(
+            raw_rule_columns(&db).await,
+            (
+                Some(r#"{"kind":"timeout","secs":90}"#.into()),
+                Some("2026-12-01".into()),
+                Some("2026-12-01T09:30:00.000Z".into()),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_rule_columns_load_as_unset_without_hiding_the_row() {
+        let db = db().await;
+        sqlx::query(
+            "INSERT INTO rule_config (guild_id, rule_id, enabled, punishment, start_date, activated_at)
+             VALUES (1, 'a', 1, 'not json', 'someday', 'yesterday')",
+        )
+        .execute(&db.0)
+        .await
+        .unwrap();
+        let rows = db.enabled_rules(1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.rule_id, "a");
+        assert_eq!(
+            (r.punishment, r.start_date, r.activated_at),
+            (None, None, None)
+        );
     }
 
     #[tokio::test]

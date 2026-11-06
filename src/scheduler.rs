@@ -9,7 +9,7 @@ use poise::serenity_prelude::{
 };
 
 use crate::app::Data;
-use crate::db::{self, RuleRow};
+use crate::db::RuleRow;
 use crate::rules::{Rule, RuleCx, missing_requirements};
 use crate::setup;
 
@@ -27,7 +27,7 @@ pub async fn activate(
     }
     row.enabled = true;
     row.start_date = None;
-    row.activated_at = Some(db::now());
+    row.activated_at = Some(chrono::Utc::now());
     data.db.save_rule(&row).await?;
     announce(ctx, data, guild_id, rule.as_ref(), &row).await;
     Ok(Ok(()))
@@ -40,9 +40,7 @@ async fn announce(
     rule: &dyn Rule,
     row: &RuleRow,
 ) {
-    let punishment = row
-        .punishment()
-        .unwrap_or_else(|| rule.default_punishment());
+    let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
     let Ok(g) = data.db.guild(guild_id.get()).await else {
         return;
     };
