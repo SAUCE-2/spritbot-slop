@@ -12,7 +12,8 @@ offender's messages and disconnects them from VC until the timeout ends.
 - **AI judging.** Messages, images and GIFs are judged by [Jev](https://typesafe.ai), so "festive"
   means something more than a keyword list.
 - **Voice checks.** The bot listens in VC and transcribes speech locally with
-  [Whisper](https://github.com/ggerganov/whisper.cpp). No audio leaves your server.
+  [Whisper](https://github.com/ggerganov/whisper.cpp). Audio never leaves your server, but the
+  transcript is judged by Jev (see [Privacy](#privacy)).
 - **Configurable punishments.** Choose a timeout (any length), a VC disconnect or nothing for each rule.
 - **Easy to extend.** Each rule is a single Rust file.
 
@@ -25,6 +26,18 @@ offender's messages and disconnects them from VC until the timeout ends.
 | `sign_off` | Every message must end with a Christmas greeting (default: 1m timeout) |
 
 More are on the way. See [Adding a rule](#adding-a-rule) to write your own.
+
+## Privacy
+
+The bot only judges members with the enforced role, and only while a rule that needs it is live.
+
+- **Sent to [Jev](https://typesafe.ai):** the text of their messages, plus attached images and
+  embed previews (GIFs, link thumbnails), and transcripts of what was said in VC. Voice audio
+  itself is transcribed locally and never sent anywhere.
+- **Posted to the log channel:** every punishment, with the user, the rule and the reason. Some
+  reasons quote what the user said: `vc_greeting` includes the full VC transcript. The same reason
+  is stored in the bot's database and, when the bot disconnects someone from VC, in the Discord
+  audit log.
 
 ## Commands
 
