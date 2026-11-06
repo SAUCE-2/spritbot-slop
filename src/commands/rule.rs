@@ -66,14 +66,12 @@ async fn list(ctx: Ctx<'_>) -> Result<()> {
         .colour(0x27ae60);
     for rule in &data.rules {
         let row = data.db.rule(guild_id.get(), rule.id()).await?;
-        let status = match (row.enabled, row.start_date()) {
+        let status = match (row.enabled, row.start_date) {
             (true, _) => "🟢 active".to_owned(),
             (false, Some(d)) => format!("📅 starts {d}"),
             _ => "⚫ off".to_owned(),
         };
-        let punishment = row
-            .punishment()
-            .unwrap_or_else(|| rule.default_punishment());
+        let punishment = row.punishment.unwrap_or_else(|| rule.default_punishment());
         let body = format!(
             "{status} · punishment: **{punishment}**
 {}",
@@ -146,7 +144,7 @@ async fn schedule(
     let guild_id = guild(ctx)?;
     let data = ctx.data();
     let r = get_rule(data, &rule)?;
-    let today = data.today();
+    let today = data.today(guild_id).await?;
     let Some(day) = parse_date(&date, today) else {
         bail!("couldn't understand the date `{date}`")
     };
@@ -154,7 +152,7 @@ async fn schedule(
     if row.enabled {
         bail!("`{rule}` is already live; `/rule disable` it first if you want to re-schedule");
     }
-    row.start_date = Some(day.to_string());
+    row.start_date = Some(day);
     data.db.save_rule(&row).await?;
     let missing = crate::rules::missing_requirements(data, r.as_ref());
     let mut text = format!("📅 `{rule}` goes live on **{day}**");
@@ -215,7 +213,7 @@ async fn punishment(
         }
     };
     let mut row = data.db.rule(guild_id.get(), &rule).await?;
-    row.punishment = Some(serde_json::to_string(&p)?);
+    row.punishment = Some(p);
     data.db.save_rule(&row).await?;
     reply(ctx, format!("`{rule}` punishment: **{p}**")).await
 }

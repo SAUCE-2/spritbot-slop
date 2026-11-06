@@ -120,7 +120,7 @@ impl RuleCx {
 
     pub fn punishment(&self) -> Punishment {
         self.row
-            .punishment()
+            .punishment
             .unwrap_or_else(|| self.rule.default_punishment())
     }
 
@@ -171,8 +171,9 @@ impl RuleCx {
         self.log(user, stats::kind::JUDGED, data).await
     }
 
-    pub fn today(&self) -> NaiveDate {
-        self.data.today()
+    /// "Today" in this guild's timezone.
+    pub async fn today(&self) -> Result<NaiveDate> {
+        self.data.today(self.guild_id).await
     }
 
     pub async fn state<T: serde::de::DeserializeOwned>(

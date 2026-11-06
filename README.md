@@ -50,11 +50,12 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 |---|---|
 | `/rule list` | All rules, whether each is on, and its punishment |
 | `/rule enable <rule>` / `/rule disable <rule>` | Go live now (announced) / turn off |
-| `/rule schedule <rule> <date>` / `/rule unschedule <rule>` | Auto-activate and announce on a day (`2026-12-05`, `12`, `tomorrow`, `+3`) |
+| `/rule schedule <rule> <date>` / `/rule unschedule <rule>` | Auto-activate and announce on a day (`2026-12-05`, `12`, `tomorrow`, `+3`) in the server's timezone |
 | `/rule punishment <rule> <none\|timeout\|disconnect> [5m]` | Set what happens to rule breakers |
 | `/rule reset <rule> [user]` | Forget what a rule remembers about a user (or everyone), so the rule can trigger again |
 | `/spirit setup [role] [announce_channel] [log_channel]` | Setup checklist, with a one-shot fix |
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
+| `/spirit timezone <tz>` | Set the server's timezone (IANA name like `America/New_York`, or `default` for `BOT_TZ`), which decides when "today" starts for daily rules and schedules |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
 | `/status` | Bot uptime, gateway latency, memory, and rule/punishment stats |
@@ -174,7 +175,9 @@ The bot posts a setup checklist when it joins your server. To set it up in one g
 /spirit setup role:@Elves announce_channel:#rules log_channel:#naughty-list
 ```
 
-Then turn on a rule with `/rule enable`, or schedule rules for the days ahead with `/rule schedule`.
+If your server isn't on UK time, set its timezone with `/spirit timezone` (for example
+`/spirit timezone America/New_York`). Then turn on a rule with `/rule enable`, or schedule rules
+for the days ahead with `/rule schedule`.
 
 ### Configuration
 
@@ -184,7 +187,7 @@ All settings are environment variables in `.env`:
 |---|---|
 | `DISCORD_TOKEN` | **Required.** Your bot token |
 | `JEV_API_KEY` | Needed for AI-judged rules (all current rules). Without it, those rules can't go live |
-| `BOT_TZ` | Timezone that defines "today" for daily rules and schedules (default `Europe/London`) |
+| `BOT_TZ` | Default timezone that defines "today" for daily rules and schedules, for servers that haven't set their own with `/spirit timezone` (default `Europe/London`) |
 | `DEV_GUILD_ID` | Register commands in one server only, so they update instantly. Leave empty in production |
 | `RUST_LOG` | Log level |
 

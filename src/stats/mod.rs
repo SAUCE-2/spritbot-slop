@@ -89,11 +89,15 @@ impl Log {
 /// Write a log entry. Never fails: logging must not get in the way of the rules (errors are
 /// traced).
 pub async fn record(data: &Data, guild_id: GuildId, log: Log) {
-    if let Err(e) = data
-        .db
-        .log_activity(guild_id.get(), &log, data.today())
-        .await
-    {
+    // A failed timezone lookup must not drop the entry: fall back to the bot default.
+    let today = match data.today(guild_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(%guild_id, "guild timezone lookup failed: {e:#}");
+            crate::config::local_date(chrono::Utc::now(), data.cfg.tz)
+        }
+    };
+    if let Err(e) = data.db.log_activity(guild_id.get(), &log, today).await {
         tracing::warn!(%guild_id, kind = log.kind, "activity log failed: {e:#}");
     }
 }

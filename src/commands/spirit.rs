@@ -1,12 +1,18 @@
 use std::fmt::Write as _;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use poise::CreateReply;
 use poise::serenity_prelude::{self as serenity, Channel, CreateEmbed, Role};
 
 use crate::app::Ctx;
+use crate::config::local_date;
 use crate::db::GuildField;
 use crate::setup;
+
+/// What `/spirit timezone` accepts to go back to the bot-wide `BOT_TZ`.
+const DEFAULT_TZ: &str = "default";
 
 fn guild(ctx: Ctx<'_>) -> Result<serenity::GuildId> {
     ctx.guild_id().context("use this in a server")
@@ -22,7 +28,15 @@ async fn reply(ctx: Ctx<'_>, text: impl Into<String>) -> Result<()> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("setup", "role", "announcechannel", "logchannel", "pardon", "status"),
+    subcommands(
+        "setup",
+        "role",
+        "announcechannel",
+        "logchannel",
+        "timezone",
+        "pardon",
+        "status"
+    ),
     subcommand_required
 )]
 pub async fn spirit(_ctx: Ctx<'_>) -> Result<()> {
@@ -67,12 +81,14 @@ async fn setup(
     // Keep the "changed since last report" fingerprint in sync with what the admin just saw.
     db.set_setup_hash(guild_id.get(), Some(&problems.join("\n")))
         .await?;
-    ctx.send(
-        CreateReply::default()
-            .embed(setup::embed(&problems))
-            .ephemeral(true),
-    )
-    .await?;
+    let tz = db.guild(guild_id.get()).await?.timezone;
+    let embed = setup::embed(&problems).field(
+        "Timezone",
+        timezone_line(tz, ctx.data().cfg.tz, Utc::now()),
+        false,
+    );
+    ctx.send(CreateReply::default().embed(embed).ephemeral(true))
+        .await?;
     Ok(())
 }
 
@@ -123,6 +139,74 @@ async fn logchannel(ctx: Ctx<'_>, channel: Channel) -> Result<()> {
         )
         .await?;
     reply(ctx, format!("Logging to <#{}>.", channel.id())).await
+}
+
+/// Parse an IANA timezone name, or `default` (→ `None`) for the bot-wide `BOT_TZ`.
+fn parse_timezone(name: &str) -> Result<Option<Tz>> {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case(DEFAULT_TZ) {
+        return Ok(None);
+    }
+    chrono_tz::TZ_VARIANTS
+        .into_iter()
+        .find(|tz| tz.name().eq_ignore_ascii_case(name))
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow!("`{name}` isn't a timezone I know; use an IANA name like `America/New_York`")
+        })
+}
+
+/// Up to 25 (Discord's limit) timezone names containing `partial`, `default` first.
+fn timezone_choices(partial: &str) -> Vec<&'static str> {
+    let partial = partial.to_lowercase();
+    std::iter::once(DEFAULT_TZ)
+        .chain(chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()))
+        .filter(|name| name.to_lowercase().contains(&partial))
+        .take(25)
+        .collect()
+}
+
+/// The timezone row of the `/spirit setup` checklist.
+fn timezone_line(own: Option<Tz>, default: Tz, now: DateTime<Utc>) -> String {
+    let tz = own.unwrap_or(default);
+    let note = if own.is_some() { "" } else { "bot default; " };
+    format!(
+        "{} ({note}today is {}) → `/spirit timezone`",
+        tz.name(),
+        local_date(now, tz)
+    )
+}
+
+async fn autocomplete_timezone(
+    _ctx: Ctx<'_>,
+    partial: &str,
+) -> serenity::CreateAutocompleteResponse {
+    let choices = timezone_choices(partial)
+        .into_iter()
+        .map(|name| serenity::AutocompleteChoice::new(name, name))
+        .collect();
+    serenity::CreateAutocompleteResponse::new().set_choices(choices)
+}
+
+/// Set the timezone that decides when "today" starts for daily rules and schedules.
+#[poise::command(slash_command, required_permissions = "ADMINISTRATOR")]
+async fn timezone(
+    ctx: Ctx<'_>,
+    #[description = "IANA name like America/New_York, or \"default\" for the bot default"]
+    #[autocomplete = "autocomplete_timezone"]
+    timezone: String,
+) -> Result<()> {
+    let guild_id = guild(ctx)?;
+    let tz = parse_timezone(&timezone)?;
+    ctx.data().db.set_timezone(guild_id.get(), tz).await?;
+    reply(
+        ctx,
+        format!(
+            "🕰️ Timezone: {}",
+            timezone_line(tz, ctx.data().cfg.tz, Utc::now())
+        ),
+    )
+    .await
 }
 
 /// End someone's timeout early.
@@ -188,4 +272,47 @@ async fn status(ctx: Ctx<'_>) -> Result<()> {
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn timezone_names_are_validated_case_insensitively() {
+        assert_eq!(
+            parse_timezone("america/new_york").unwrap(),
+            Some(chrono_tz::America::New_York)
+        );
+        assert_eq!(parse_timezone(" default ").unwrap(), None);
+        let err = parse_timezone("Mars/Olympus").unwrap_err().to_string();
+        assert!(err.contains("Mars/Olympus"), "{err}");
+    }
+
+    #[test]
+    fn timezone_autocomplete_matches_substrings_and_stays_within_discords_limit() {
+        let all = timezone_choices("");
+        assert_eq!(all.len(), 25);
+        assert_eq!(all[0], "default");
+        let york = timezone_choices("york");
+        assert!(york.contains(&"America/New_York"), "{york:?}");
+        assert!(york.iter().all(|n| n.to_lowercase().contains("york")));
+    }
+
+    #[test]
+    fn setup_shows_the_timezone_and_whether_it_is_the_default() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 30, 12, 0, 0)
+            .unwrap();
+        let london = chrono_tz::Europe::London;
+        assert_eq!(
+            timezone_line(None, london, now),
+            "Europe/London (bot default; today is 2026-11-30) → `/spirit timezone`"
+        );
+        assert_eq!(
+            timezone_line(Some(chrono_tz::Pacific::Kiritimati), london, now),
+            "Pacific/Kiritimati (today is 2026-12-01) → `/spirit timezone`"
+        );
+    }
 }

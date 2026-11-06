@@ -14,9 +14,9 @@ fn guild(ctx: Ctx<'_>) -> Result<serenity::GuildId> {
     ctx.guild_id().context("use this in a server")
 }
 
-fn period(data: &Data, s: Option<&str>) -> Result<Period> {
+async fn period(data: &Data, guild_id: serenity::GuildId, s: Option<&str>) -> Result<Period> {
     let s = s.unwrap_or_default();
-    Period::parse(s, data.today()).with_context(|| {
+    Period::parse(s, data.today(guild_id).await?).with_context(|| {
         format!("couldn't understand the month `{s}` (try `2026-12`, `december`, `last` or `all`)")
     })
 }
@@ -43,7 +43,7 @@ async fn summary(
 ) -> Result<()> {
     let guild_id = guild(ctx)?;
     let data = ctx.data();
-    let period = period(data, month.as_deref())?;
+    let period = period(data, guild_id, month.as_deref()).await?;
     let counts = data.db.activity_counts(guild_id.get(), period).await?;
     let mut text = String::new();
     if counts.is_empty() {
@@ -78,7 +78,7 @@ async fn export(
 ) -> Result<()> {
     let guild_id = guild(ctx)?;
     let data = ctx.data();
-    let period = period(data, month.as_deref())?;
+    let period = period(data, guild_id, month.as_deref()).await?;
     ctx.defer_ephemeral().await.ok();
     let names: std::collections::HashMap<u64, String> = ctx
         .cache()
