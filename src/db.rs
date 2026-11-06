@@ -266,6 +266,41 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically replace one user's state under `key` with `new`, but only if it still holds
+    /// `current` (`None` = nothing stored). Returns whether this call made the change, so of
+    /// several concurrent callers that read the same value, exactly one wins.
+    pub async fn swap_state<T: serde::Serialize>(
+        &self,
+        guild_id: u64,
+        rule_id: &str,
+        user_id: u64,
+        key: &str,
+        current: Option<&T>,
+        new: &T,
+    ) -> Result<bool> {
+        let sql = match current {
+            None => {
+                "INSERT INTO rule_state (guild_id, rule_id, user_id, key, value, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING"
+            }
+            Some(_) => {
+                "UPDATE rule_state SET value = ?5, updated_at = ?6
+                 WHERE guild_id = ?1 AND rule_id = ?2 AND user_id = ?3 AND key = ?4 AND value = ?7"
+            }
+        };
+        let done = sqlx::query(sql)
+            .bind(guild_id as i64)
+            .bind(rule_id)
+            .bind(user_id as i64)
+            .bind(key)
+            .bind(serde_json::to_string(new)?)
+            .bind(now())
+            .bind(current.map(serde_json::to_string).transpose()?)
+            .execute(&self.0)
+            .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
     /// Forget a rule's state for one user, or for everyone (`None`).
     pub async fn clear_state(
         &self,
@@ -478,6 +513,22 @@ mod tests {
             db.recent_punishments(1, 10).await.unwrap()[0].action,
             "timed out"
         );
+    }
+
+    #[tokio::test]
+    async fn swap_state_only_replaces_the_value_the_caller_saw() {
+        let db = db().await;
+        // Absent: the first caller claims it, a second caller who also saw nothing loses.
+        assert!(db.swap_state(1, "r", 7, "k", None, &1).await.unwrap());
+        assert!(!db.swap_state(1, "r", 7, "k", None, &2).await.unwrap());
+        assert_eq!(db.state::<i32>(1, "r", 7, "k").await.unwrap(), Some(1));
+        // Present: only a caller who saw the current value replaces it.
+        assert!(!db.swap_state(1, "r", 7, "k", Some(&5), &3).await.unwrap());
+        assert!(db.swap_state(1, "r", 7, "k", Some(&1), &3).await.unwrap());
+        assert_eq!(db.state::<i32>(1, "r", 7, "k").await.unwrap(), Some(3));
+        // Other users and keys are separate.
+        assert!(db.swap_state(1, "r", 8, "k", None, &1).await.unwrap());
+        assert!(db.swap_state(1, "r", 7, "j", None, &1).await.unwrap());
     }
 
     #[tokio::test]
