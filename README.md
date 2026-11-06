@@ -14,9 +14,9 @@ offender's messages and disconnects them from VC until the timeout ends.
 - **Voice checks.** The bot listens in VC and transcribes speech locally with
   [Whisper](https://github.com/ggerganov/whisper.cpp). No audio leaves your server.
 - **Configurable punishments.** Choose a timeout (any length), a VC disconnect or nothing for each rule.
-- **Monthly leaderboards.** Every judgement, punishment and timeout dodge is recorded, so at the end
-  of the month you can crown the Naughty List, the Grinch, the longest festive streak and the best
-  (and worst) things people said.
+- **Activity log.** Everything that happens is logged raw (messages, reactions, voice, presence,
+  judgements, punishments...), so at the end of the month you can build whatever leaderboards you
+  like from it.
 - **Easy to extend.** Each rule is a single Rust file.
 
 ## Rules
@@ -43,91 +43,51 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
-| `/leaderboard me [user] [month]` | Where you (or someone) stand on every board |
-| `/leaderboard show [month] [section] [board]` | Peek at the leaderboards privately (overview, one section, or top 10 of one board) |
-| `/leaderboard post [month] [section] [board]` | Post them in the channel for everyone: the end-of-month reveal |
-| `/leaderboard export [month]` | Every recorded event as a CSV, to build your own |
-| `/leaderboard wipe confirm:true [user]` | Delete recorded stats, e.g. after testing |
+| `/stats summary [month]` | How much has been logged, by kind |
+| `/stats export [month]` | Download the activity log as gzipped JSON Lines |
+| `/stats wipe confirm:true [user]` | Delete logged activity, e.g. after testing |
 
 `month` takes `2026-12`, `december`, `last` or `all` and defaults to the current month.
 
-## Leaderboards
+## Activity log
 
-Everything is recorded for members with the enforced role, so at the end of the month you can run
-`/leaderboard post month:last` and crown everyone. The overview opens with server totals (people,
-messages, judgements, timeouts, VC time, the most festive, grinchiest and naughtiest days), then the
-top 3 of every board below, then a rule-by-rule summary.
+Rather than deciding up front what to rank, the bot logs everything into the `activity_log` table
+and leaderboards get made from it at the end of the month. Each entry has the server, the user, the
+channel, a `kind`, the rule involved, whether the user had the enforced role at the time, the day
+(in `BOT_TZ`), a UTC timestamp, and a JSON `data` payload. Bots aren't logged.
 
-**😈 Naughty**
-
-| Board | Who tops it |
+| kind | data |
 |---|---|
-| 🎅 Naughty List | Most punishments |
-| ⏳ Hard Time / ⛓️ Longest Sentence | Most timeout time in total / in one go |
-| 📉 Worst Day | Most punishments in a single day |
-| 🔁 Repeat Offender / 😈 Naughty Streak | Most days punished / most days in a row |
-| 🃏 Rule Collector | Most different rules broken |
-| 🚪 Can't Stay Away | Most messages and VC joins attempted while timed out |
-| 🧱 Talking to a Wall | Longest message typed while timed out (quoted) |
-| 🩸 First Blood / ⚰️ Latest Victim | First and most recent punishment |
-| 🙄 Bah Humbug | Said "humbug", "grinch" or "hate christmas" the most |
-| 🙏 Teacher's Pet | Most pardons |
+| `message` | The whole Discord message: content, attachments, embeds, stickers, mentions, reply |
+| `message_edit` / `message_delete` / `message_delete_bulk` | The edit event / the deleted message's id (join it to `message`) |
+| `reaction_add` / `reaction_remove` | Emoji, message id, and who wrote the message |
+| `voice` | `join`/`leave`/`move`/`update`, with old and new mute, deafen, stream and camera state |
+| `vc_session` | Seconds spent in VC, logged on leaving |
+| `presence` | Status, devices and activities (games, Spotify, custom status), logged when they change |
+| `typing`, `command`, `thread_create` | Who typed where, which slash command was used, new threads |
+| `member_seen` / `member_join` / `member_leave` / `member_update` | Names, nick and roles (snapshot at startup, then changes) |
+| `judged` | A Jev verdict: `score`, what was `said`, and whether it was `festive` |
+| `punished` | Punishment, what actually happened, the reason, and the timeout length |
+| `timeout_message` / `timeout_vc` | Tried to talk or join VC while timed out |
+| `pardoned`, `rule_activated`, `rule_disabled` | Admin actions |
+| `vc_greeting_heard` / `vc_greeting_silent` / `vc_greeting_left` | What people said on joining VC, or that they said nothing or left |
 
-**😇 Nice**
+To get the data out, run `/stats export month:december`. It gives you a `.jsonl.gz` file with one JSON
+object per line. If it's over Discord's 10 MB upload limit, copy the SQLite database off the server
+instead:
 
-| Board | Who tops it |
-|---|---|
-| 😇 Nice List / 🦹 The Grinch | Highest / lowest average festiveness (at least 3 judgements) |
-| ✅ Most Reliable | Highest share of judgements passed (at least 5) |
-| 🔥 Festive Streak | Most days in a row judged festive and never punished |
-| 📈 Most Improved | Biggest rise in average score from the first half of the month to the second |
-| 👼 Angel | Most judgements without ever being punished |
-| ✨ Christmas Miracle / 🧊 Ice Cold | Most near-perfect (≥ 0.95) / zero-spirit (≤ 0.05) scores |
-| 🎢 Mood Swings | Biggest gap between best and worst score |
-| 🔍 Under Scrutiny | Judged the most |
-| 🌟 Most Festive / 💀 Least Festive Moment | Best and worst single thing said, quoted |
-| 😅 Closest Call / 📜 Festive Essay | Least festive thing that still passed / longest festive message |
-| 🎄 Merry Christmas! / 🎅 Ho Ho Ho | Most seasonal greetings / ho ho hos |
-| 🔔 Said "Christmas" / 🎁 Festive Emoji | Most mentions of Christmas / 🎄🎅❄️🎁… used |
+```bash
+docker compose cp spiritbot:/data/spiritbot.db .
+```
 
-**💬 Chat**
+Then query it with SQLite's JSON functions, e.g. who got punished the most:
 
-| Board | Who tops it |
-|---|---|
-| 💬 Chatterbox / ✍️ Wordsmith | Most messages / words |
-| 📖 Novelist / 🗣️ Rambler | Longest message / most words per message |
-| 📨 Busiest Day / 📅 Ever-Present | Most messages in one day / most days active |
-| 📢 SHOUTER / 🔊 Loudest Message | Most all-caps messages / the longest one, quoted |
-| ❓ Curious | Most questions |
-| 🦉 Night Owl / 🐦 Early Bird | Most messages between midnight and 5am / 5am and 8am |
-| 😂 Emoji Fiend / 🖼️ Meme Dealer / 🔗 Link Dropper | Most emoji / images, GIFs and stickers / links |
-| ✏️ Second Thoughts | Most messages edited |
+```sql
+SELECT user_id, COUNT(*) FROM activity_log
+WHERE kind = 'punished' AND day LIKE '2026-12-%' GROUP BY user_id ORDER BY 2 DESC;
+```
 
-**🤝 Social**
-
-| Board | Who tops it |
-|---|---|
-| ⭐ Crowd Pleaser / 👍 Generous | Most reactions received / given |
-| 🎄 Festive Reactor | Most festive reactions given |
-| 📣 Most Wanted / 🔔 Pinger | Pinged the most / pinged others the most |
-| ↩️ Reply Guy / 🗨️ Conversation Starter | Most replies sent / received |
-
-**🎧 Voice**
-
-| Board | Who tops it |
-|---|---|
-| 🎧 VC Regular / 📆 VC Every Day | Most joins / most days in VC |
-| 🪵 Yule Log / 🕯️ Marathon / 🌙 Longest VC Day | Most time in VC in total / in one session / in one day |
-| 🐇 Channel Hopper / 💨 Drive-By | Most channel switches / visits under a minute |
-| 🙉 Deaf to the Carols / 🤫 Silent Treatment | Deafened / muted the most |
-| 📺 Streamer / 📸 Camera On | Went live / turned the camera on the most |
-
-**📜 Every rule** also gets its own Most punished, Most and Least festive, Best average and First
-Blood boards, plus any it adds. `vc_greeting` adds 🤐 Silent Night (joined VC and said nothing) and
-🏃 Cold Feet (left before the 10 seconds were up).
-
-VC time is tracked in memory. People already in VC when the bot starts are picked up from then, but
-a session that was running during a restart loses the time before the restart.
+The log holds message content, so treat the export and the database as private.
 
 ## Self-hosting
 
@@ -206,12 +166,9 @@ To run cargo in a toolchain image with the native dependencies:
    - `cx.punish(user, reason)` punishes someone
    - `cx.state` / `cx.set_state` store per-user memory
    - `cx.record_judgement(user, score, what_they_said)` whenever Jev judges something, festive or
-     not. This feeds the leaderboards, and the rule gets its own most and least festive boards.
-     Punishments are recorded for you.
-   - `cx.record(user, Event::new("my_kind"))` records anything else worth ranking. Add a board for it
-     in the rule's `boards()`, e.g. `Board::most("dodged", "🏃 Most dodged", &["my_kind"], "times")`.
-     Boards can also rank totals, averages, records for a single day (`.per_day()`), distinct days,
-     or quote standout moments (`Board::quote`); see `src/stats/boards.rs`.
+     not. Punishments are logged for you.
+   - `cx.log(user, "my_kind", json!({...}))` logs anything else that happened. Log generously, since you
+     can't go back for data later.
    - `cx.data.jev` is the raw Jev client (Choice/Score questions, several questions in one call)
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 

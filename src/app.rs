@@ -7,7 +7,7 @@ use crate::ai::jev::Jev;
 use crate::config::Config;
 use crate::db::Db;
 use crate::rules::Rule;
-use crate::stats::activity::VcSessions;
+use crate::stats::sessions::{LastPresence, VcSessions};
 use crate::voice::listener::VoiceListener;
 use crate::voice::stt::Stt;
 
@@ -29,6 +29,8 @@ pub struct Inner {
     pub voice: VoiceListener,
     /// Who's in VC since when, for time-in-VC stats.
     pub vc_sessions: VcSessions,
+    /// Last presence logged per person, so only changes are logged.
+    pub last_presence: LastPresence,
 }
 
 impl Deref for Data {

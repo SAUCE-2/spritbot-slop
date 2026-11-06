@@ -2,41 +2,56 @@
 //! the guild's enforced role.
 
 use anyhow::Result;
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use poise::serenity_prelude::{self as serenity, FullEvent, GuildId, Message, RoleId, UserId};
 
 use crate::app::Data;
 use crate::punish;
 use crate::rules::{Msg, RuleCx};
 use crate::setup;
-use crate::stats::{self, Event, activity, kind};
+use crate::stats::{self, Log, kind};
+use serde_json::json;
 
 pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> Result<()> {
+    // Log everything first, whatever the rules then do with it.
+    stats::capture::capture(ctx, event, data).await;
     match event {
-        FullEvent::GuildCreate { guild, .. } => {
-            // Pick up people already in VC (e.g. after a restart) so their time counts.
-            for (user, vs) in &guild.voice_states {
-                if vs.channel_id.is_some() && !vs.member.as_ref().is_some_and(|m| m.user.bot) {
-                    data.vc_sessions.start(guild.id, *user);
-                }
-            }
-            spawn_report(ctx, data, guild.id)
-        }
+        FullEvent::GuildCreate { guild, .. } => spawn_report(ctx, data, guild.id),
         FullEvent::GuildRoleDelete { guild_id, .. } => spawn_report(ctx, data, *guild_id),
         FullEvent::ChannelDelete { channel, .. } => spawn_report(ctx, data, channel.guild_id),
         FullEvent::Message { new_message } => on_message(ctx, data, new_message).await?,
-        FullEvent::VoiceStateUpdate { old, new } => on_voice(ctx, data, old.as_ref(), new).await?,
-        FullEvent::ReactionAdd { add_reaction } => on_reaction(ctx, data, add_reaction).await?,
-        FullEvent::MessageUpdate { event, .. } => {
-            // Embeds unfurling also send updates; only count real edits.
-            let (Some(guild_id), Some(author)) = (event.guild_id, &event.author) else {
+        FullEvent::VoiceStateUpdate { old, new } => {
+            let Some(guild_id) = new.guild_id else {
                 return Ok(());
             };
-            if author.bot || event.edited_timestamp.is_none() || event.content.is_none() {
+            if new.member.as_ref().is_some_and(|m| m.user.bot) {
                 return Ok(());
             }
-            if is_enforced(ctx, data, guild_id, author.id, None).await? {
-                stats::record(data, guild_id, author.id, Event::new(kind::EDIT)).await;
+            let old_ch = old.as_ref().and_then(|o| o.channel_id);
+            if old_ch == new.channel_id {
+                return Ok(()); // mute/deafen/stream toggles
+            }
+            if let Some(ch) = old_ch {
+                data.voice.user_left(guild_id, new.user_id, ch);
+            }
+            let (Some(ch), Some(member)) = (new.channel_id, &new.member) else {
+                return Ok(());
+            };
+            if let Some(until) = data.db.timed_out(guild_id.get(), new.user_id.get()).await? {
+                punish::disconnect(ctx, guild_id, new.user_id, "SpiritBot: timed out").await?;
+                let log = Log::new(kind::TIMEOUT_VC, json!({ "until": until }))
+                    .user(new.user_id)
+                    .channel(ch);
+                stats::record(data, guild_id, log).await;
+                let dm = serenity::CreateMessage::new().content(timeout_notice(new.user_id, until));
+                new.user_id.direct_message(ctx, dm).await.ok();
+                return Ok(());
+            }
+            if !is_enforced(ctx, data, guild_id, new.user_id, Some(&member.roles)).await? {
+                return Ok(());
+            }
+            for cx in enabled_rules(ctx, data, guild_id).await? {
+                log_err(&cx, cx.rule.on_voice_join(&cx, member, ch).await);
             }
         }
         FullEvent::PresenceUpdate { new_data } => {
@@ -55,98 +70,6 @@ pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> 
             }
         }
         _ => {}
-    }
-    Ok(())
-}
-
-async fn on_voice(
-    ctx: &serenity::Context,
-    data: &Data,
-    old: Option<&serenity::VoiceState>,
-    new: &serenity::VoiceState,
-) -> Result<()> {
-    let Some(guild_id) = new.guild_id else {
-        return Ok(());
-    };
-    if new.member.as_ref().is_some_and(|m| m.user.bot) {
-        return Ok(());
-    }
-    let user = new.user_id;
-    let roles = new.member.as_ref().map(|m| &m.roles);
-    let old_ch = old.and_then(|o| o.channel_id);
-    if old_ch == new.channel_id {
-        // Mute/deafen/stream/camera toggles.
-        if let Some(old) = old
-            && new.channel_id.is_some()
-        {
-            let toggles = activity::voice_toggles(old.into(), new.into());
-            if !toggles.is_empty() && is_enforced(ctx, data, guild_id, user, roles).await? {
-                for ev in toggles {
-                    stats::record(data, guild_id, user, ev).await;
-                }
-            }
-        }
-        return Ok(());
-    }
-    if let Some(ch) = old_ch {
-        data.voice.user_left(guild_id, user, ch);
-    }
-    if old_ch.is_some() && new.channel_id.is_none() {
-        if let Some(spent) = data.vc_sessions.end(guild_id, user)
-            && is_enforced(ctx, data, guild_id, user, roles).await?
-        {
-            for ev in activity::vc_leave_events(spent) {
-                stats::record(data, guild_id, user, ev).await;
-            }
-        }
-        return Ok(());
-    }
-    if old_ch.is_some() && is_enforced(ctx, data, guild_id, user, roles).await? {
-        stats::record(data, guild_id, user, Event::new(kind::VC_HOP)).await;
-    }
-    let (Some(ch), Some(member)) = (new.channel_id, &new.member) else {
-        return Ok(());
-    };
-    if let Some(until) = data.db.timed_out(guild_id.get(), user.get()).await? {
-        punish::disconnect(ctx, guild_id, user, "SpiritBot: timed out").await?;
-        stats::record(data, guild_id, user, Event::new(kind::TIMEOUT_VC)).await;
-        let dm = serenity::CreateMessage::new().content(timeout_notice(user, until));
-        user.direct_message(ctx, dm).await.ok();
-        return Ok(());
-    }
-    if !is_enforced(ctx, data, guild_id, user, Some(&member.roles)).await? {
-        return Ok(());
-    }
-    data.vc_sessions.start(guild_id, user);
-    if old_ch.is_none() {
-        stats::record(data, guild_id, user, Event::new(kind::VC_JOIN)).await;
-    }
-    for cx in enabled_rules(ctx, data, guild_id).await? {
-        log_err(&cx, cx.rule.on_voice_join(&cx, member, ch).await);
-    }
-    Ok(())
-}
-
-async fn on_reaction(ctx: &serenity::Context, data: &Data, r: &serenity::Reaction) -> Result<()> {
-    let (Some(guild_id), Some(user)) = (r.guild_id, r.user_id) else {
-        return Ok(());
-    };
-    if user == ctx.cache.current_user().id || r.member.as_ref().is_some_and(|m| m.user.bot) {
-        return Ok(());
-    }
-    let roles = r.member.as_ref().map(|m| &m.roles);
-    if is_enforced(ctx, data, guild_id, user, roles).await? {
-        stats::record(data, guild_id, user, Event::new(kind::REACTION_GIVEN)).await;
-        if activity::is_festive_reaction(&r.emoji) {
-            stats::record(data, guild_id, user, Event::new(kind::FESTIVE_REACTION)).await;
-        }
-    }
-    if let Some(author) = r.message_author_id
-        && author != user
-        && author != ctx.cache.current_user().id
-        && is_enforced(ctx, data, guild_id, author, None).await?
-    {
-        stats::record(data, guild_id, author, Event::new(kind::REACTION_RECEIVED)).await;
     }
     Ok(())
 }
@@ -173,8 +96,13 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         .await?
     {
         msg.delete(ctx).await.ok();
-        let ev = Event::new(kind::TIMEOUT_MESSAGE).text(msg.content.clone());
-        stats::record(data, guild_id, msg.author.id, ev).await;
+        let log = Log::new(
+            kind::TIMEOUT_MESSAGE,
+            json!({ "message_id": msg.id, "content": msg.content, "until": until }),
+        )
+        .user(msg.author.id)
+        .channel(msg.channel_id);
+        stats::record(data, guild_id, log).await;
         // Self-deleting, so a timed-out spammer doesn't flood the channel with notices.
         if let Ok(notice) = msg
             .channel_id
@@ -194,13 +122,6 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         return Ok(());
     }
 
-    let hour = Utc::now().with_timezone(&data.cfg.tz).hour();
-    for (user, ev) in activity::message_events(msg, hour) {
-        // Pings and replies credit other people: only count those the rules apply to.
-        if user == msg.author.id || is_enforced(ctx, data, guild_id, user, None).await? {
-            stats::record(data, guild_id, user, ev).await;
-        }
-    }
     let m = Msg::new(msg);
 
     for cx in enabled_rules(ctx, data, guild_id).await? {
