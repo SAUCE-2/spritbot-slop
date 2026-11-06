@@ -33,6 +33,7 @@ pub async fn status(ctx: Ctx<'_>) -> Result<()> {
         let _ = writeln!(bot, "**Memory:** {mb:.1} MB");
     }
     let _ = writeln!(bot, "**Version:** {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(bot, "**Commit:** {}", fmt_commit(option_env!("GIT_SHA")));
     let _ = write!(
         bot,
         "**Voice (Whisper):** {} · **AI (Jev):** {}",
@@ -89,6 +90,18 @@ fn fmt_duration(secs: i64) -> String {
     out
 }
 
+/// Short SHA linked to the commit; builds without `GIT_SHA` (local `cargo`) show `unknown`.
+fn fmt_commit(sha: Option<&str>) -> String {
+    match sha.filter(|s| !s.is_empty()) {
+        Some(sha) => format!(
+            "[`{}`]({}/commit/{sha})",
+            sha.get(..7).unwrap_or(sha),
+            env!("CARGO_PKG_REPOSITORY")
+        ),
+        None => "unknown".to_owned(),
+    }
+}
+
 /// Resident memory from /proc (Linux only; `None` elsewhere).
 fn memory_mb() -> Option<f64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -114,5 +127,15 @@ mod tests {
         assert_eq!(fmt_duration(3_600), "1h 0m 0s");
         assert_eq!(fmt_duration(93_784), "1d 2h 3m 4s");
         assert_eq!(fmt_duration(-5), "0s");
+    }
+
+    #[test]
+    fn commits() {
+        assert_eq!(
+            fmt_commit(Some("0123456789abcdef")),
+            "[`0123456`](https://github.com/SAUCE-2/spritbot-slop/commit/0123456789abcdef)"
+        );
+        assert_eq!(fmt_commit(Some("")), "unknown");
+        assert_eq!(fmt_commit(None), "unknown");
     }
 }
