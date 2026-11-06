@@ -38,7 +38,8 @@ The bot only judges members with the enforced role, and only while a rule that n
 - **Sent to [Jev](https://typesafe.ai):** the text of their messages, plus attached images and
   embed previews (GIFs, link thumbnails), and transcripts of what was said in VC. Voice audio
   itself is transcribed locally and never sent anywhere.
-- **Posted to the log channel:** every punishment, with the user, the rule and the reason. Some
+- **Posted to the log channel:** every punishment (and, for rules in shadow mode, every would-be
+  punishment), with the user, the rule and the reason. Some
   reasons quote what the user said: `vc_greeting` includes the full VC transcript. The same reason
   is stored in the bot's database and, when the bot disconnects someone from VC, in the Discord
   audit log.
@@ -49,10 +50,12 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 
 | Command | What it does |
 |---|---|
-| `/rule list` | All rules, whether each is on, and its punishment |
-| `/rule enable <rule>` / `/rule disable <rule>` | Go live now (announced) / turn off |
+| `/rule list` | All rules, whether each is on (and shadowed), its punishment and its threshold |
+| `/rule enable <rule>` / `/rule disable <rule>` | Go live now (announced, unless shadowed) / turn off |
 | `/rule schedule <rule> <date>` / `/rule unschedule <rule>` | Auto-activate and announce on a day (`2026-12-05`, `12`, `tomorrow`, `+3`) in the server's timezone |
 | `/rule punishment <rule> <none\|timeout\|disconnect> [5m]` | Set what happens to rule breakers |
+| `/rule threshold <rule> <0-1\|default>` | Set the Jev score a rule's judged messages and VC greetings must reach (default `0.50`; lower is more lenient) |
+| `/rule shadow <rule> <on\|off>` | Shadow mode: judge and log as usual, but only report would-be breaches to the log channel (no replies, no punishments) |
 | `/rule reset <rule> [user]` | Forget what a rule remembers about a user (or everyone), so the rule can trigger again |
 | `/spirit setup [role] [announce_channel] [log_channel]` | Setup checklist, with a one-shot fix |
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
@@ -65,6 +68,19 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/stats wipe confirm:true [user]` | Delete logged activity, e.g. after testing |
 
 `month` takes `2026-12`, `december`, `last` or `all` and defaults to the current month.
+
+### Tuning a rule
+
+Jev scores everything it judges from 0 to 1, and a rule is broken when the score falls below the
+rule's threshold. To find the right threshold for your server before anyone gets punished:
+
+1. `/rule shadow <rule> on`, then `/rule enable <rule>`. A shadowed rule is judged as usual and
+   every verdict is logged, but instead of replying and punishing, the bot posts to the log channel:
+   `👻 [shadow] @user would have broken **rule** (score 0.31, threshold 0.50): <reason>`. It isn't
+   announced publicly while shadowed (the log channel gets a note instead).
+2. Watch the log channel. Too many false alarms? Lower the bar with `/rule threshold <rule> 0.35`.
+   Letting too much through? Raise it. `/rule threshold <rule> default` goes back to `0.50`.
+3. `/rule shadow <rule> off` when you're happy. The rule then goes live for real and is announced.
 
 ## Activity log
 
@@ -228,8 +244,11 @@ To run cargo in a toolchain image with the native dependencies:
    - `s.today()` is today in the guild's timezone
    - `s.log(user, "my_kind", json!({...}))` logs anything else that happened. Log generously, since
      you can't go back for data later. Judgements and punishments are logged for you.
-   - Outside messages, `cx.punish(user, reason)` punishes someone, `crate::ai::ask_noul` asks Jev
-     one question, and `cx.record_judgement(user, score, what_they_said)` logs its verdict.
+   - Outside messages, `crate::ai::ask_noul` asks Jev one question, `cx.judged(user, score,
+     what_they_said)` logs its verdict and says whether it meets the rule's threshold, and
+     `cx.enforce(user, Some(score), reason)` punishes someone (or, in shadow mode, only reports it
+     to the log channel). Don't compare scores or punish yourself, so thresholds and shadow mode
+     work for your rule too.
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 
 Pull requests with new rules are welcome. CI runs `cargo fmt`, `clippy` and tests on every PR.
