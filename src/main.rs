@@ -12,6 +12,7 @@ mod punish;
 mod rules;
 mod scheduler;
 mod setup;
+mod stats;
 mod voice;
 
 use anyhow::Result;
@@ -55,6 +56,8 @@ async fn main() -> Result<()> {
         stt,
         jev,
         voice: Default::default(),
+        vc_sessions: Default::default(),
+        last_presence: Default::default(),
         started_at: chrono::Utc::now(),
     });
 

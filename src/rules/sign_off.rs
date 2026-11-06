@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 use super::{Msg, Need, Rule, RuleCx};
 use crate::punish::Punishment;
+use crate::stats::FESTIVE;
 
 const QUESTION: &str = "The state is a Discord chat message, possibly with attached images. Does \
     it end with a Christmas greeting, as its sign-off?";
@@ -49,7 +50,13 @@ impl Rule for SignOff {
         let Some(score) = cx.ask_msg(msg, QUESTION, Some((YES, NO))).await else {
             return Ok(());
         };
-        if score < 0.5 {
+        let said = if msg.msg.content.trim().is_empty() {
+            "(image/GIF)"
+        } else {
+            &msg.msg.content
+        };
+        cx.record_judgement(msg.msg.author.id, score, said).await;
+        if score < FESTIVE {
             msg.msg
                 .reply(
                     &cx.ctx,

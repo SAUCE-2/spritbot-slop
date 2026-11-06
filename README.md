@@ -14,6 +14,9 @@ offender's messages and disconnects them from VC until the timeout ends.
 - **Voice checks.** The bot listens in VC and transcribes speech locally with
   [Whisper](https://github.com/ggerganov/whisper.cpp). No audio leaves your server.
 - **Configurable punishments.** Choose a timeout (any length), a VC disconnect or nothing for each rule.
+- **Activity log.** Everything that happens is logged raw (messages, reactions, voice, presence,
+  judgements, punishments...), so at the end of the month you can build whatever leaderboards you
+  like from it.
 - **Easy to extend.** Each rule is a single Rust file.
 
 ## Rules
@@ -42,6 +45,51 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
 | `/status` | Bot uptime, gateway latency, memory, and rule/punishment stats |
+| `/stats summary [month]` | How much has been logged, by kind |
+| `/stats export [month]` | Download the activity log as gzipped JSON Lines |
+| `/stats wipe confirm:true [user]` | Delete logged activity, e.g. after testing |
+
+`month` takes `2026-12`, `december`, `last` or `all` and defaults to the current month.
+
+## Activity log
+
+Rather than deciding up front what to rank, the bot logs everything into the `activity_log` table
+and leaderboards get made from it at the end of the month. Each entry has the server, the user, the
+channel, a `kind`, the rule involved, whether the user had the enforced role at the time, the day
+(in `BOT_TZ`), a UTC timestamp, and a JSON `data` payload. Bots aren't logged.
+
+| kind | data |
+|---|---|
+| `message` | The whole Discord message: content, attachments, embeds, stickers, mentions, reply |
+| `message_edit` / `message_delete` / `message_delete_bulk` | The edit event / the deleted message's id (join it to `message`) |
+| `reaction_add` / `reaction_remove` | Emoji, message id, and who wrote the message |
+| `voice` | `join`/`leave`/`move`/`update`, with old and new mute, deafen, stream and camera state |
+| `vc_session` | Seconds spent in VC, logged on leaving |
+| `presence` | Status, devices and activities (games, Spotify, custom status), logged when they change |
+| `typing`, `command`, `thread_create` | Who typed where, which slash command was used, new threads |
+| `member_seen` / `member_join` / `member_leave` / `member_update` | Names, nick and roles (snapshot at startup, then changes) |
+| `judged` | A Jev verdict: `score`, what was `said`, and whether it was `festive` |
+| `punished` | Punishment, what actually happened, the reason, and the timeout length |
+| `timeout_message` / `timeout_vc` | Tried to talk or join VC while timed out |
+| `pardoned`, `rule_activated`, `rule_disabled` | Admin actions |
+| `vc_greeting_heard` / `vc_greeting_silent` / `vc_greeting_left` | What people said on joining VC, or that they said nothing or left |
+
+To get the data out, run `/stats export month:december`. It gives you a `.jsonl.gz` file with one JSON
+object per line. If it's over Discord's 10 MB upload limit, copy the SQLite database off the server
+instead:
+
+```bash
+docker compose cp spiritbot:/data/spiritbot.db .
+```
+
+Then query it with SQLite's JSON functions, e.g. who got punished the most:
+
+```sql
+SELECT user_id, COUNT(*) FROM activity_log
+WHERE kind = 'punished' AND day LIKE '2026-12-%' GROUP BY user_id ORDER BY 2 DESC;
+```
+
+The log holds message content, so treat the export and the database as private.
 
 ## Self-hosting
 
@@ -153,6 +201,10 @@ To run cargo in a toolchain image with the native dependencies:
      Prefer this to hand-written heuristics.
    - `cx.punish(user, reason)` punishes someone
    - `cx.state` / `cx.set_state` store per-user memory
+   - `cx.record_judgement(user, score, what_they_said)` whenever Jev judges something, festive or
+     not. Punishments are logged for you.
+   - `cx.log(user, "my_kind", json!({...}))` logs anything else that happened. Log generously, since you
+     can't go back for data later.
    - `cx.data.jev` is the raw Jev client (Choice/Score questions, several questions in one call)
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 
