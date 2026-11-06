@@ -137,7 +137,7 @@ async fn schedule(
     let guild_id = guild(ctx)?;
     let data = ctx.data();
     let r = get_rule(data, &rule)?;
-    let today = data.today();
+    let today = data.today(guild_id).await?;
     let Some(day) = parse_date(&date, today) else {
         bail!("couldn't understand the date `{date}`")
     };

@@ -4,21 +4,44 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::Tz;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 
+use crate::config::local_date;
 use crate::punish::Punishment;
 
 #[derive(Clone)]
 pub struct Db(pub SqlitePool);
 
-#[derive(Clone, Debug, Default, sqlx::FromRow)]
+#[derive(Clone, Debug, Default)]
 pub struct GuildConfig {
     pub enforced_role_id: Option<i64>,
     pub announce_channel_id: Option<i64>,
     pub log_channel_id: Option<i64>,
     pub last_setup_hash: Option<String>,
+    /// This guild's own timezone; `None` = the bot default (`BOT_TZ`).
+    pub timezone: Option<Tz>,
+}
+
+impl GuildConfig {
+    /// The timezone that defines "today" here.
+    pub fn tz(&self, default: Tz) -> Tz {
+        self.timezone.unwrap_or(default)
+    }
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for GuildConfig {
+    fn from_row(row: &'r SqliteRow) -> sqlx::Result<Self> {
+        Ok(Self {
+            enforced_role_id: row.try_get("enforced_role_id")?,
+            announce_channel_id: row.try_get("announce_channel_id")?,
+            log_channel_id: row.try_get("log_channel_id")?,
+            last_setup_hash: row.try_get("last_setup_hash")?,
+            timezone: parse_column(row, "timezone", |s| s.parse().ok())?,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -184,6 +207,18 @@ impl Db {
         Ok(())
     }
 
+    pub async fn set_timezone(&self, guild_id: u64, tz: Option<Tz>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_config (guild_id, timezone) VALUES (?1, ?2)
+             ON CONFLICT (guild_id) DO UPDATE SET timezone = excluded.timezone",
+        )
+        .bind(guild_id as i64)
+        .bind(tz.map(|t| t.name()))
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
     // ---- rule config ----
 
     pub async fn rule(&self, guild_id: u64, rule_id: &str) -> Result<RuleRow> {
@@ -215,14 +250,25 @@ impl Db {
         )
     }
 
-    /// Rules whose scheduled start date has arrived (any guild).
-    pub async fn due_scheduled(&self, today: NaiveDate) -> Result<Vec<RuleRow>> {
-        Ok(sqlx::query_as(
-            "SELECT * FROM rule_config WHERE start_date IS NOT NULL AND start_date <= ?",
+    /// Rules (in any guild) whose scheduled start date has arrived in that guild's own
+    /// timezone, or in `default_tz` for guilds without one.
+    pub async fn due_scheduled(&self, now: DateTime<Utc>, default_tz: Tz) -> Result<Vec<RuleRow>> {
+        let rows = sqlx::query(
+            "SELECT r.*, g.timezone FROM rule_config r
+             LEFT JOIN guild_config g ON g.guild_id = r.guild_id
+             WHERE r.start_date IS NOT NULL",
         )
-        .bind(today.to_string())
         .fetch_all(&self.0)
-        .await?)
+        .await?;
+        let mut due = Vec::new();
+        for row in &rows {
+            let rule = <RuleRow as sqlx::FromRow<_>>::from_row(row)?;
+            let tz = parse_column(row, "timezone", |s| s.parse().ok())?.unwrap_or(default_tz);
+            if rule.start_date.is_some_and(|d| d <= local_date(now, tz)) {
+                due.push(rule);
+            }
+        }
+        Ok(due)
     }
 
     pub async fn save_rule(&self, r: &RuleRow) -> Result<()> {
@@ -416,6 +462,7 @@ impl Db {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use chrono_tz::Tz;
 
     async fn db() -> Db {
         Db::connect("sqlite::memory:").await.unwrap()
@@ -436,22 +483,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guild_timezone_is_stored_by_name_and_falls_back_to_the_bot_default() {
+        let db = db().await;
+        let london: Tz = "Europe/London".parse().unwrap();
+        assert_eq!(db.guild(1).await.unwrap().tz(london), london);
+
+        db.set_timezone(1, Some(chrono_tz::Asia::Tokyo))
+            .await
+            .unwrap();
+        let g = db.guild(1).await.unwrap();
+        assert_eq!(g.timezone, Some(chrono_tz::Asia::Tokyo));
+        assert_eq!(g.tz(london), chrono_tz::Asia::Tokyo);
+        let (raw,): (String,) = sqlx::query_as("SELECT timezone FROM guild_config")
+            .fetch_one(&db.0)
+            .await
+            .unwrap();
+        assert_eq!(raw, "Asia/Tokyo");
+
+        db.set_timezone(1, None).await.unwrap();
+        assert_eq!(db.guild(1).await.unwrap().tz(london), london);
+    }
+
+    #[tokio::test]
+    async fn corrupt_guild_timezone_falls_back_to_the_bot_default() {
+        let db = db().await;
+        db.set_guild_field(1, GuildField::EnforcedRole, Some(42))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE guild_config SET timezone = 'Mars/Olympus'")
+            .execute(&db.0)
+            .await
+            .unwrap();
+        let g = db.guild(1).await.unwrap();
+        assert_eq!(g.enforced_role_id, Some(42));
+        assert_eq!(g.tz(chrono_tz::UTC), chrono_tz::UTC);
+    }
+
+    #[tokio::test]
+    async fn scheduled_rules_are_due_by_each_guilds_own_today() {
+        let db = db().await;
+        // 2026-11-30 12:00 UTC is already Dec 1 in Kiritimati (UTC+14) but still Nov 30
+        // in Pago Pago (UTC-11).
+        let now = parse_time("2026-11-30T12:00:00Z").unwrap();
+        db.set_timezone(1, Some(chrono_tz::Pacific::Kiritimati))
+            .await
+            .unwrap();
+        db.set_timezone(2, Some(chrono_tz::Pacific::Pago_Pago))
+            .await
+            .unwrap();
+        for guild_id in [1, 2, 3] {
+            let mut r = db.rule(guild_id, "a").await.unwrap();
+            r.start_date = NaiveDate::from_ymd_opt(2026, 12, 1);
+            db.save_rule(&r).await.unwrap();
+        }
+        let due = |default_tz| {
+            let db = db.clone();
+            async move {
+                let mut ids: Vec<i64> = db
+                    .due_scheduled(now, default_tz)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.guild_id)
+                    .collect();
+                ids.sort();
+                ids
+            }
+        };
+        // Guild 3 has no timezone, so the bot default decides for it.
+        assert_eq!(due(chrono_tz::UTC).await, vec![1]);
+        assert_eq!(due(chrono_tz::Pacific::Auckland).await, vec![1, 3]);
+    }
+
+    #[tokio::test]
     async fn rules_and_schedule() {
         let db = db().await;
         let mut r = db.rule(1, "a").await.unwrap();
         assert!(!r.enabled);
-        let today = |s: &str| s.parse::<NaiveDate>().unwrap();
-        r.start_date = Some(today("2026-12-01"));
+        r.start_date = NaiveDate::from_ymd_opt(2026, 12, 1);
         r.punishment = Some(Punishment::Disconnect);
         db.save_rule(&r).await.unwrap();
+        let at = |s: &str| parse_time(s).unwrap();
         assert!(
-            db.due_scheduled(today("2026-11-30"))
+            db.due_scheduled(at("2026-11-30T23:59:59Z"), chrono_tz::UTC)
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            db.due_scheduled(today("2026-12-01")).await.unwrap().len(),
+            db.due_scheduled(at("2026-12-01T00:00:00Z"), chrono_tz::UTC)
+                .await
+                .unwrap()
+                .len(),
             1
         );
         assert_eq!(

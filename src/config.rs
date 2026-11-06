@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 
 /// Process-wide settings from the environment.
@@ -10,7 +11,8 @@ pub struct Config {
     pub database_url: String,
     pub whisper_model: String,
     pub jev_api_key: Option<String>,
-    /// Timezone that defines "today" for daily rules and schedules.
+    /// Default timezone that defines "today" for daily rules and schedules, for guilds
+    /// that haven't set their own with `/spirit timezone`.
     pub tz: Tz,
 }
 
@@ -32,5 +34,25 @@ impl Config {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("BOT_TZ is not a valid timezone: {e}"))?,
         })
+    }
+}
+
+/// The calendar date it is at `now` in `tz`.
+pub fn local_date(now: DateTime<Utc>, tz: Tz) -> NaiveDate {
+    now.with_timezone(&tz).date_naive()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, TimeZone, Utc};
+
+    #[test]
+    fn the_same_instant_is_a_different_day_across_the_date_line() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 30, 12, 0, 0).unwrap();
+        let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        assert_eq!(local_date(now, chrono_tz::Pacific::Kiritimati), day(12, 1));
+        assert_eq!(local_date(now, chrono_tz::Pacific::Pago_Pago), day(11, 30));
+        assert_eq!(local_date(now, chrono_tz::UTC), day(11, 30));
     }
 }

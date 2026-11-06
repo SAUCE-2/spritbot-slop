@@ -148,8 +148,9 @@ impl RuleCx {
         crate::ai::ask_noul(&self.data, state, images, question, criteria).await
     }
 
-    pub fn today(&self) -> NaiveDate {
-        self.data.today()
+    /// "Today" in this guild's timezone.
+    pub async fn today(&self) -> Result<NaiveDate> {
+        self.data.today(self.guild_id).await
     }
 
     pub async fn state<T: serde::de::DeserializeOwned>(

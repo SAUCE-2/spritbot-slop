@@ -91,7 +91,11 @@ where
 }
 
 async fn activate_scheduled(ctx: &serenity::Context, data: &Data) -> Result<()> {
-    for row in data.db.due_scheduled(data.today()).await? {
+    for row in data
+        .db
+        .due_scheduled(chrono::Utc::now(), data.cfg.tz)
+        .await?
+    {
         let guild_id = GuildId::new(row.guild_id as u64);
         let Some(rule) = data.rule(&row.rule_id) else {
             continue;

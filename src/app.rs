@@ -2,9 +2,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::Tz;
+use poise::serenity_prelude::GuildId;
 
 use crate::ai::jev::Jev;
-use crate::config::Config;
+use crate::config::{Config, local_date};
 use crate::db::Db;
 use crate::rules::Rule;
 use crate::voice::listener::VoiceListener;
@@ -46,8 +48,13 @@ impl Data {
         self.rules.iter().find(|r| r.id() == id).cloned()
     }
 
-    /// "Today" in the bot's configured timezone.
-    pub fn today(&self) -> NaiveDate {
-        chrono::Utc::now().with_timezone(&self.cfg.tz).date_naive()
+    /// The timezone that defines "today" in this guild (its own, else `BOT_TZ`).
+    pub async fn guild_tz(&self, guild_id: GuildId) -> Result<Tz, Error> {
+        Ok(self.db.guild(guild_id.get()).await?.tz(self.cfg.tz))
+    }
+
+    /// "Today" in this guild's timezone.
+    pub async fn today(&self, guild_id: GuildId) -> Result<NaiveDate, Error> {
+        Ok(local_date(Utc::now(), self.guild_tz(guild_id).await?))
     }
 }

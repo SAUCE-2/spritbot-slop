@@ -43,7 +43,7 @@ impl Rule for FirstMessage {
 
     async fn on_message(&self, cx: &RuleCx, msg: &Msg<'_>) -> Result<()> {
         let user = msg.msg.author.id;
-        let today = cx.today();
+        let today = cx.today().await?;
         if cx.state::<NaiveDate>(user, LAST_DAY).await? == Some(today) {
             return Ok(());
         }
