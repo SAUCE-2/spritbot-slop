@@ -3,12 +3,22 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+
+use poise::serenity_prelude::MessageId;
 
 use super::{MessageCheck, Msg, MsgKind, Need, Rule, RuleScope};
 use crate::punish::Punishment;
 
-/// State key: the last day (bot timezone) this user's first message was judged.
-const LAST_DAY: &str = "last_day";
+/// State key for [`Judged`].
+const JUDGED: &str = "judged";
+
+/// The user's message that was judged as their first of `day` (bot timezone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Judged {
+    day: NaiveDate,
+    message: MessageId,
+}
 
 const CHECK: MessageCheck = MessageCheck {
     question: QUESTION,
@@ -54,13 +64,18 @@ impl Rule for FirstMessage {
             return Ok(None);
         }
         let user = m.msg.author.id;
+        let seen: Option<Judged> = s.state(user, JUDGED).await?;
         let today = s.today();
-        if s.state::<NaiveDate>(user, LAST_DAY).await? == Some(today) {
+        if seen.is_some_and(|j| j.day == today) {
             return Ok(None);
         }
-        // Mark before asking so only the first message of the day counts.
-        s.set_state(user, LAST_DAY, &today).await?;
-        Ok(Some(CHECK))
+        // Claim the day before asking, atomically, so only one message can be the first.
+        let first = Judged {
+            day: today,
+            message: m.msg.id,
+        };
+        let claimed = s.swap_state(user, JUDGED, seen.as_ref(), &first).await?;
+        Ok(claimed.then_some(CHECK))
     }
 
     /// The judge failed: don't punish, judge their next message instead.

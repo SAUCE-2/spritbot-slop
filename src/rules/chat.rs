@@ -349,4 +349,17 @@ pub(crate) mod tests {
         );
         assert!(judge.calls().is_empty());
     }
+
+    #[tokio::test]
+    async fn two_first_messages_at_once_are_judged_once() {
+        let data = data(&["first_message"]).await;
+        let judge = FakeJudge::answering(0.1);
+        let (a, b) = (message(1, 7, "hello"), message(2, 7, "hi"));
+        let (a, b) = tokio::join!(
+            broken_rules(&data, &judge, &a, MsgKind::Posted),
+            broken_rules(&data, &judge, &b, MsgKind::Posted),
+        );
+        assert_eq!(a.len() + b.len(), 1, "punished {a:?} and {b:?}");
+        assert_eq!(judge.calls().len(), 1);
+    }
 }
