@@ -32,7 +32,11 @@ pub async fn status(ctx: Ctx<'_>) -> Result<()> {
     if let Some(mb) = memory_mb() {
         let _ = writeln!(bot, "**Memory:** {mb:.1} MB");
     }
-    let _ = writeln!(bot, "**Version:** {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(
+        bot,
+        "**Version:** {}",
+        option_env!("SPIRITBOT_VERSION").unwrap_or("dev")
+    );
     let _ = write!(
         bot,
         "**Voice (Whisper):** {} · **AI (Jev):** {}",
