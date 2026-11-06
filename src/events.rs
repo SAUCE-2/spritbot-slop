@@ -9,6 +9,7 @@ use crate::app::Data;
 use crate::punish;
 use crate::rules::{Msg, RuleCx};
 use crate::setup;
+use crate::stats::{self, Event, kind};
 
 pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> Result<()> {
     match event {
@@ -35,6 +36,8 @@ pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> 
             };
             if let Some(until) = data.db.timed_out(guild_id.get(), new.user_id.get()).await? {
                 punish::disconnect(ctx, guild_id, new.user_id, "SpiritBot: timed out").await?;
+                let ev = Event::new(kind::TIMEOUT_VC);
+                stats::record(data, guild_id, new.user_id, ev).await;
                 let dm = serenity::CreateMessage::new().content(timeout_notice(new.user_id, until));
                 new.user_id.direct_message(ctx, dm).await.ok();
                 return Ok(());
@@ -42,6 +45,7 @@ pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> 
             if !is_enforced(ctx, data, guild_id, new.user_id, Some(&member.roles)).await? {
                 return Ok(());
             }
+            stats::record(data, guild_id, new.user_id, Event::new(kind::VC_JOIN)).await;
             for cx in enabled_rules(ctx, data, guild_id).await? {
                 log_err(&cx, cx.rule.on_voice_join(&cx, member, ch).await);
             }
@@ -88,6 +92,8 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         .await?
     {
         msg.delete(ctx).await.ok();
+        let ev = Event::new(kind::TIMEOUT_MESSAGE).text(msg.content.clone());
+        stats::record(data, guild_id, msg.author.id, ev).await;
         // Self-deleting, so a timed-out spammer doesn't flood the channel with notices.
         if let Ok(notice) = msg
             .channel_id
@@ -107,6 +113,7 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         return Ok(());
     }
 
+    stats::record(data, guild_id, msg.author.id, Event::new(kind::MESSAGE)).await;
     let m = Msg::new(msg);
 
     for cx in enabled_rules(ctx, data, guild_id).await? {

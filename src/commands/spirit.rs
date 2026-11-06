@@ -134,6 +134,10 @@ async fn pardon(ctx: Ctx<'_>, user: serenity::User) -> Result<()> {
         .db
         .clear_timeout(guild_id.get(), user.id.get())
         .await?;
+    if done {
+        let ev = crate::stats::Event::new(crate::stats::kind::PARDONED);
+        crate::stats::record(ctx.data(), guild_id, user.id, ev).await;
+    }
     reply(
         ctx,
         if done {

@@ -14,6 +14,9 @@ offender's messages and disconnects them from VC until the timeout ends.
 - **Voice checks.** The bot listens in VC and transcribes speech locally with
   [Whisper](https://github.com/ggerganov/whisper.cpp). No audio leaves your server.
 - **Configurable punishments.** Choose a timeout (any length), a VC disconnect or nothing for each rule.
+- **Monthly leaderboards.** Every judgement, punishment and timeout dodge is recorded, so at the end
+  of the month you can crown the Naughty List, the Grinch, the longest festive streak and the best
+  (and worst) things people said.
 - **Easy to extend.** Each rule is a single Rust file.
 
 ## Rules
@@ -40,6 +43,31 @@ Anyone can use the read-only commands. Everything else needs **Administrator**.
 | `/spirit role` / `announcechannel` / `logchannel` | Individual settings |
 | `/spirit pardon <user>` | End someone's timeout early |
 | `/spirit status` | Recent punishments |
+| `/leaderboard me [user] [month]` | Where you (or someone) stand on every board |
+| `/leaderboard show [month] [board]` | Peek at the leaderboards privately (overview, or top 10 of one board) |
+| `/leaderboard post [month] [board]` | Post them in the channel for everyone: the end-of-month reveal |
+| `/leaderboard export [month]` | Every recorded event as a CSV, to build your own |
+| `/leaderboard wipe confirm:true [user]` | Delete recorded stats, e.g. after testing |
+
+`month` takes `2026-12`, `december`, `last` or `all` and defaults to the current month.
+
+## Leaderboards
+
+| Board | Who tops it |
+|---|---|
+| 🎅 Naughty List | Most punishments |
+| ⏳ Hard Time | Most timeout time handed out |
+| 😇 Nice List / 🦹 The Grinch | Highest / lowest average festiveness (at least 3 judgements) |
+| 🔥 Festive Streak | Most days in a row judged festive and never punished |
+| 🌟 Most Festive / 💀 Least Festive Moment | The single best and worst thing anyone said, quoted |
+| 😅 Closest Call | The least festive thing that still passed |
+| 🚪 Can't Stay Away | Most messages and VC joins attempted while timed out |
+| 🙏 Teacher's Pet | Most pardons |
+| 💬 Chatterbox / 🎧 VC Regular | Most messages / VC joins |
+
+Each rule also gets its own most punished, most festive and least festive boards, plus any it
+adds. `vc_greeting` adds 🤐 Silent Night (joined VC and said nothing) and 🏃 Cold Feet (left before
+the 10 seconds were up).
 
 ## Self-hosting
 
@@ -117,6 +145,11 @@ To run cargo in a toolchain image with the native dependencies:
      Prefer this to hand-written heuristics.
    - `cx.punish(user, reason)` punishes someone
    - `cx.state` / `cx.set_state` store per-user memory
+   - `cx.record_judgement(user, score, what_they_said)` whenever Jev judges something, festive or
+     not. This feeds the leaderboards, and the rule gets its own most and least festive boards.
+     Punishments are recorded for you.
+   - `cx.record(user, Event::new("my_kind"))` records anything else worth ranking. Add a board for it
+     in the rule's `boards()`, e.g. `Board::most("dodged", "🏃 Most dodged", &["my_kind"], "times")`
    - `cx.data.jev` is the raw Jev client (Choice/Score questions, several questions in one call)
 4. Test it in your dev server: enable the rule, break it yourself, then `/rule reset` to try again.
 

@@ -12,6 +12,7 @@ mod punish;
 mod rules;
 mod scheduler;
 mod setup;
+mod stats;
 mod voice;
 
 use anyhow::Result;

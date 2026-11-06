@@ -8,6 +8,7 @@ use poise::serenity_prelude::{self as serenity, EditMember, GuildId, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::app::Data;
+use crate::stats::{self, Event};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -89,6 +90,13 @@ pub async fn punish(
     data.db
         .log_punishment(guild_id.get(), rule_id, user_id.get(), &action, reason)
         .await?;
+    let secs = match p {
+        Punishment::Timeout { secs } => secs as f64,
+        _ => 0.0,
+    };
+    let mut ev = Event::new(stats::kind::PUNISHED).amount(secs).text(reason);
+    ev.rule_id = data.rule(rule_id).map(|r| r.id());
+    stats::record(data, guild_id, user_id, ev).await;
     post_log(
         ctx,
         data,
