@@ -37,7 +37,7 @@ pub async fn status(ctx: Ctx<'_>) -> Result<()> {
         bot,
         "**Voice (Whisper):** {} · **AI (Jev):** {}",
         on_off(data.stt.is_some()),
-        on_off(data.jev.is_some()),
+        on_off(data.judge.is_some()),
     );
 
     let all = data.db.punishment_stats(None).await?;

@@ -41,8 +41,11 @@ async fn main() -> Result<()> {
             None
         }
     };
-    let jev = cfg.jev_api_key.clone().map(ai::jev::Jev::new);
-    if jev.is_none() {
+    let judge = cfg
+        .jev_api_key
+        .clone()
+        .map(|key| std::sync::Arc::new(ai::jev::Jev::new(key)) as std::sync::Arc<dyn ai::Judge>);
+    if judge.is_none() {
         tracing::warn!("JEV_API_KEY not set: rules that need Jev can't go live");
     }
     let data = Data::new(Inner {
@@ -50,7 +53,7 @@ async fn main() -> Result<()> {
         db,
         rules: rules::registry(),
         stt,
-        jev,
+        judge,
         voice: Default::default(),
         vc_sessions: Default::default(),
         last_presence: Default::default(),
@@ -94,7 +97,11 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MEMBERS
         | GatewayIntents::GUILD_PRESENCES;
+    // Keep recent messages so an edit can be told apart from an embed unfurl (see events.rs).
+    let mut cache = serenity::cache::Settings::default();
+    cache.max_messages = 50;
     serenity::ClientBuilder::new(&cfg.discord_token, intents)
+        .cache_settings(cache)
         .framework(framework)
         .register_songbird_from_config(voice_cfg)
         .await?

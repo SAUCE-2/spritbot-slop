@@ -3,11 +3,13 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use poise::serenity_prelude::{self as serenity, FullEvent, GuildId, Message, RoleId, UserId};
+use poise::serenity_prelude::{
+    self as serenity, FullEvent, GuildId, Message, MessageUpdateEvent, RoleId, UserId,
+};
 
 use crate::app::Data;
 use crate::punish;
-use crate::rules::{Msg, RuleCx};
+use crate::rules::{Msg, MsgKind, RuleCx, RuleScope, judge_message};
 use crate::setup;
 use crate::stats::{self, Log, kind};
 use serde_json::json;
@@ -19,7 +21,18 @@ pub async fn handle(ctx: &serenity::Context, event: &FullEvent, data: &Data) -> 
         FullEvent::GuildCreate { guild, .. } => spawn_report(ctx, data, guild.id),
         FullEvent::GuildRoleDelete { guild_id, .. } => spawn_report(ctx, data, *guild_id),
         FullEvent::ChannelDelete { channel, .. } => spawn_report(ctx, data, channel.guild_id),
-        FullEvent::Message { new_message } => on_message(ctx, data, new_message).await?,
+        FullEvent::Message { new_message } => {
+            on_chat(ctx, data, new_message, MsgKind::Posted).await?
+        }
+        FullEvent::MessageUpdate {
+            old_if_available,
+            new,
+            event,
+        } => {
+            if let Some(msg) = author_edit(old_if_available.as_ref(), new.as_ref(), event) {
+                on_chat(ctx, data, &msg, MsgKind::Edited).await?
+            }
+        }
         FullEvent::VoiceStateUpdate { old, new } => {
             let Some(guild_id) = new.guild_id else {
                 return Ok(());
@@ -83,7 +96,33 @@ fn spawn_report(ctx: &serenity::Context, data: &Data, guild_id: GuildId) {
     });
 }
 
-async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Result<()> {
+/// The message as it now reads, if this update is its author changing what it says (text or
+/// attachments). Embed unfurls and other updates that don't change it give `None`. Without a
+/// cached copy to compare against, Discord's edit timestamp says whether the author edited it.
+fn author_edit(
+    old: Option<&Message>,
+    new: Option<&Message>,
+    event: &MessageUpdateEvent,
+) -> Option<Message> {
+    // A partial update without the text (or, uncached, without the author) isn't an edit we can judge.
+    if event.content.is_none() || (new.is_none() && event.author.is_none()) {
+        return None;
+    }
+    let msg = new.cloned().unwrap_or_else(|| {
+        let mut m = Message::default();
+        event.apply_to_message(&mut m);
+        m
+    });
+    let attachments = |m: &Message| m.attachments.iter().map(|a| a.id).collect::<Vec<_>>();
+    let changed = match old {
+        Some(old) => old.content != msg.content || attachments(old) != attachments(&msg),
+        None => event.edited_timestamp.is_some(),
+    };
+    changed.then_some(msg)
+}
+
+/// A new or edited chat message: timed-out authors get it deleted, enforced members get it judged.
+async fn on_chat(ctx: &serenity::Context, data: &Data, msg: &Message, kind: MsgKind) -> Result<()> {
     let Some(guild_id) = msg.guild_id else {
         return Ok(());
     };
@@ -122,10 +161,26 @@ async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) -> Resu
         return Ok(());
     }
 
-    let m = Msg::new(msg);
+    judge_chat(ctx, data, guild_id, &Msg::new(msg, kind)).await
+}
 
-    for cx in enabled_rules(ctx, data, guild_id).await? {
-        log_err(&cx, cx.rule.on_message(&cx, &m).await);
+/// One judge call answers every enabled rule's check on the message; then each broken rule
+/// replies and punishes.
+async fn judge_chat(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: GuildId,
+    m: &Msg<'_>,
+) -> Result<()> {
+    let scopes = RuleScope::enabled(data, guild_id).await?;
+    for breach in judge_message(data.judge.as_deref(), &scopes, m).await {
+        m.msg.reply(ctx, breach.reply()).await.ok();
+        let cx = RuleCx {
+            ctx: ctx.clone(),
+            scope: breach.scope.clone(),
+        };
+        let punished = cx.punish(m.msg.author.id, &breach.reason()).await;
+        log_err(&cx, punished.map(drop));
     }
     Ok(())
 }
@@ -163,20 +218,12 @@ async fn enabled_rules(
     data: &Data,
     guild_id: GuildId,
 ) -> Result<Vec<RuleCx>> {
-    Ok(data
-        .db
-        .enabled_rules(guild_id.get())
+    Ok(RuleScope::enabled(data, guild_id)
         .await?
         .into_iter()
-        .filter_map(|row| {
-            let rule = data.rule(&row.rule_id)?;
-            Some(RuleCx {
-                ctx: ctx.clone(),
-                data: data.clone(),
-                guild_id,
-                row,
-                rule,
-            })
+        .map(|scope| RuleCx {
+            ctx: ctx.clone(),
+            scope,
         })
         .collect())
 }
@@ -184,5 +231,75 @@ async fn enabled_rules(
 fn log_err(cx: &RuleCx, r: Result<()>) {
     if let Err(e) = r {
         tracing::warn!(guild_id = %cx.guild_id, rule = cx.rule.id(), "rule error: {e:#}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn update(fields: serde_json::Value) -> MessageUpdateEvent {
+        let mut event = json!({ "id": "5", "channel_id": "6", "guild_id": "1" });
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        serde_json::from_value(event).unwrap()
+    }
+
+    fn author() -> serde_json::Value {
+        json!({ "id": "7", "username": "elf", "discriminator": "0", "avatar": null })
+    }
+
+    fn cached(content: &str) -> Message {
+        let mut m = Message::default();
+        m.content = content.into();
+        m
+    }
+
+    #[test]
+    fn a_changed_text_is_an_edit() {
+        let event = update(json!({ "content": "bah humbug", "author": author() }));
+        let (old, new) = (cached("Merry Christmas!"), cached("bah humbug"));
+        let msg = author_edit(Some(&old), Some(&new), &event).unwrap();
+        assert_eq!(msg.content, "bah humbug");
+    }
+
+    #[test]
+    fn an_unfurl_that_keeps_the_text_is_not_an_edit() {
+        let event = update(json!({
+            "content": "see https://x.y", "author": author(),
+            "edited_timestamp": "2026-12-25T10:00:00Z"
+        }));
+        let (old, new) = (cached("see https://x.y"), cached("see https://x.y"));
+        assert!(author_edit(Some(&old), Some(&new), &event).is_none());
+    }
+
+    #[test]
+    fn a_partial_update_without_text_is_not_an_edit() {
+        let ts = "2026-12-25T10:00:00Z";
+        let no_text = update(json!({ "embeds": [], "author": author(), "edited_timestamp": ts }));
+        assert!(author_edit(None, None, &no_text).is_none());
+        let no_author = update(json!({ "content": "hi", "edited_timestamp": ts }));
+        assert!(author_edit(None, None, &no_author).is_none());
+    }
+
+    #[test]
+    fn uncached_messages_trust_the_edit_timestamp() {
+        let edited = update(json!({
+            "content": "bah humbug", "author": author(),
+            "edited_timestamp": "2026-12-25T10:00:00Z"
+        }));
+        let msg = author_edit(None, None, &edited).unwrap();
+        assert_eq!(
+            (msg.id.get(), msg.author.id.get(), msg.content.as_str()),
+            (5, 7, "bah humbug")
+        );
+        assert_eq!(msg.guild_id, Some(GuildId::new(1)));
+
+        let unfurled = update(json!({ "content": "see https://x.y", "author": author() }));
+        assert!(author_edit(None, None, &unfurled).is_none());
     }
 }

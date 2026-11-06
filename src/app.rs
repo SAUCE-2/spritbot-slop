@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use poise::serenity_prelude::GuildId;
 
-use crate::ai::jev::Jev;
+use crate::ai::Judge;
 use crate::config::{Config, local_date};
 use crate::db::Db;
 use crate::rules::Rule;
@@ -26,8 +26,8 @@ pub struct Inner {
     pub rules: Vec<Arc<dyn Rule>>,
     /// None if the Whisper model couldn't be loaded; voice rules then fail the setup check.
     pub stt: Option<Stt>,
-    /// None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
-    pub jev: Option<Jev>,
+    /// Jev, or None if JEV_API_KEY isn't set; AI-judged rules then fail the setup check.
+    pub judge: Option<Arc<dyn Judge>>,
     pub voice: VoiceListener,
     /// Who's in VC since when, for time-in-VC stats.
     pub vc_sessions: VcSessions,

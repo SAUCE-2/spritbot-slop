@@ -1,23 +1,24 @@
 //! Rules: each daily rule is one file implementing [`Rule`], listed in [`registry`].
 
+mod chat;
 mod first_message;
 mod sign_off;
 mod vc_greeting;
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use poise::serenity_prelude::{
-    self as serenity, ChannelId, GuildId, Member, Message, OnlineStatus, UserId,
-};
+use poise::serenity_prelude::{self as serenity, ChannelId, GuildId, Member, OnlineStatus, UserId};
 
-use crate::ai::jev::Image;
 use crate::app::Data;
 use crate::db::RuleRow;
 use crate::punish::{self, Punishment};
 use crate::stats::{self, Log};
+
+pub use chat::{MessageCheck, Msg, MsgKind, judge_message};
 
 /// Every rule, in display order. Add each new daily rule here (one file per rule in this folder).
 pub fn registry() -> Vec<Arc<dyn Rule>> {
@@ -49,7 +50,15 @@ pub trait Rule: Send + Sync {
         &[]
     }
 
-    async fn on_message(&self, _cx: &RuleCx, _msg: &Msg<'_>) -> Result<()> {
+    /// What this rule wants the judge to answer about a chat message (new or edited, see
+    /// [`MsgKind`]), or `None` to let it through. Every rule's check on one message is answered
+    /// in a single judge call; a "no" gets the author a reply and the rule's punishment.
+    async fn message_check(&self, _s: &RuleScope, _m: &Msg<'_>) -> Result<Option<MessageCheck>> {
+        Ok(None)
+    }
+    /// The judge couldn't answer this rule's check on `m` (it failed or isn't configured), so
+    /// nobody is punished. Undo anything `message_check` reserved for that message.
+    async fn message_unjudged(&self, _s: &RuleScope, _m: &Msg<'_>) -> Result<()> {
         Ok(())
     }
     async fn on_voice_join(
@@ -69,36 +78,131 @@ pub trait Rule: Send + Sync {
     }
 }
 
-/// A chat message plus its images, downloaded lazily and at most once across all rules.
-pub struct Msg<'a> {
-    pub msg: &'a Message,
-    images: tokio::sync::OnceCell<Vec<Image>>,
-}
-
-impl<'a> Msg<'a> {
-    pub fn new(msg: &'a Message) -> Self {
-        Self {
-            msg,
-            images: Default::default(),
-        }
-    }
-
-    pub async fn images(&self) -> Vec<Image> {
-        self.images
-            .get_or_init(|| crate::ai::message_images(self.msg))
-            .await
-            .clone()
-    }
-}
-
-/// Everything a rule needs for one guild. Owned so rules can move it into spawned tasks.
+/// One rule in one guild, without a Discord connection: its config and its per-user memory.
 #[derive(Clone)]
-pub struct RuleCx {
-    pub ctx: serenity::Context,
+pub struct RuleScope {
     pub data: Data,
     pub guild_id: GuildId,
     pub row: RuleRow,
     pub rule: Arc<dyn Rule>,
+}
+
+impl RuleScope {
+    pub async fn load(data: &Data, guild_id: GuildId, rule: Arc<dyn Rule>) -> Result<Self> {
+        let row = data.db.rule(guild_id.get(), rule.id()).await?;
+        Ok(Self {
+            data: data.clone(),
+            guild_id,
+            row,
+            rule,
+        })
+    }
+
+    /// Every rule enabled in the guild.
+    pub async fn enabled(data: &Data, guild_id: GuildId) -> Result<Vec<Self>> {
+        Ok(data
+            .db
+            .enabled_rules(guild_id.get())
+            .await?
+            .into_iter()
+            .filter_map(|row| {
+                let rule = data.rule(&row.rule_id)?;
+                Some(Self {
+                    data: data.clone(),
+                    guild_id,
+                    row,
+                    rule,
+                })
+            })
+            .collect())
+    }
+
+    pub fn punishment(&self) -> Punishment {
+        self.row
+            .punishment
+            .unwrap_or_else(|| self.rule.default_punishment())
+    }
+
+    /// "Today" in this guild's timezone.
+    pub async fn today(&self) -> Result<NaiveDate> {
+        self.data.today(self.guild_id).await
+    }
+
+    /// Log something that happened to `user` in the activity log, tagged with this rule, for
+    /// end-of-month leaderboards. `data` is anything serializable, usually `json!({...})`.
+    /// Log generously: it's cheap and you can't go back for it later. Never fails.
+    pub async fn log(&self, user: UserId, kind: &'static str, data: impl serde::Serialize) {
+        let log = Log::new(kind, data)
+            .user(user)
+            .rule(self.rule.id())
+            .enforced(Some(true));
+        stats::record(&self.data, self.guild_id, log).await
+    }
+
+    /// Log a Jev verdict and what was judged. Called whenever the rule judges something,
+    /// festive or not (for chat messages, [`judge_message`] does it).
+    pub async fn record_judgement(&self, user: UserId, score: f32, said: &str) {
+        let data = serde_json::json!({
+            "score": score,
+            "said": said,
+            "festive": score >= stats::FESTIVE,
+        });
+        self.log(user, stats::kind::JUDGED, data).await
+    }
+
+    pub async fn state<T: serde::de::DeserializeOwned>(
+        &self,
+        user: UserId,
+        key: &str,
+    ) -> Result<Option<T>> {
+        self.data
+            .db
+            .state(self.guild_id.get(), self.rule.id(), user.get(), key)
+            .await
+    }
+
+    /// Store `new` only if the state still holds `current`; see [`crate::db::Db::swap_state`].
+    pub async fn swap_state<T: serde::Serialize>(
+        &self,
+        user: UserId,
+        key: &str,
+        current: Option<&T>,
+        new: &T,
+    ) -> Result<bool> {
+        self.data
+            .db
+            .swap_state(
+                self.guild_id.get(),
+                self.rule.id(),
+                user.get(),
+                key,
+                current,
+                new,
+            )
+            .await
+    }
+
+    pub async fn clear_state(&self, user: UserId) -> Result<()> {
+        self.data
+            .db
+            .clear_state(self.guild_id.get(), self.rule.id(), Some(user.get()))
+            .await
+    }
+}
+
+/// A [`RuleScope`] plus the Discord connection, for hooks that act on Discord themselves.
+/// Owned so rules can move it into spawned tasks.
+#[derive(Clone)]
+pub struct RuleCx {
+    pub ctx: serenity::Context,
+    pub scope: RuleScope,
+}
+
+impl Deref for RuleCx {
+    type Target = RuleScope;
+    fn deref(&self) -> &RuleScope {
+        &self.scope
+    }
 }
 
 impl RuleCx {
@@ -108,20 +212,10 @@ impl RuleCx {
         guild_id: GuildId,
         rule: Arc<dyn Rule>,
     ) -> Result<Self> {
-        let row = data.db.rule(guild_id.get(), rule.id()).await?;
         Ok(Self {
             ctx: ctx.clone(),
-            data: data.clone(),
-            guild_id,
-            row,
-            rule,
+            scope: RuleScope::load(data, guild_id, rule).await?,
         })
-    }
-
-    pub fn punishment(&self) -> Punishment {
-        self.row
-            .punishment
-            .unwrap_or_else(|| self.rule.default_punishment())
     }
 
     pub async fn punish(&self, user: UserId, reason: &str) -> Result<String> {
@@ -136,75 +230,6 @@ impl RuleCx {
         )
         .await
     }
-
-    /// Ask Jev one yes/no question about a chat message (text + images). `None` = no answer.
-    pub async fn ask_msg(
-        &self,
-        m: &Msg<'_>,
-        question: &str,
-        criteria: Option<(&str, &str)>,
-    ) -> Option<f32> {
-        let images = m.images().await;
-        let state = crate::ai::message_state(&m.msg.content, &images);
-        crate::ai::ask_noul(&self.data, state, images, question, criteria).await
-    }
-
-    /// Log something that happened to `user` in the activity log, tagged with this rule, for
-    /// end-of-month leaderboards. `data` is anything serializable, usually `json!({...})`.
-    /// Log generously: it's cheap and you can't go back for it later. Never fails.
-    pub async fn log(&self, user: UserId, kind: &'static str, data: impl serde::Serialize) {
-        let log = Log::new(kind, data)
-            .user(user)
-            .rule(self.rule.id())
-            .enforced(Some(true));
-        stats::record(&self.data, self.guild_id, log).await
-    }
-
-    /// Log a Jev verdict and what was judged. Call this whenever the rule judges something,
-    /// festive or not.
-    pub async fn record_judgement(&self, user: UserId, score: f32, said: &str) {
-        let data = serde_json::json!({
-            "score": score,
-            "said": said,
-            "festive": score >= stats::FESTIVE,
-        });
-        self.log(user, stats::kind::JUDGED, data).await
-    }
-
-    /// "Today" in this guild's timezone.
-    pub async fn today(&self) -> Result<NaiveDate> {
-        self.data.today(self.guild_id).await
-    }
-
-    pub async fn state<T: serde::de::DeserializeOwned>(
-        &self,
-        user: UserId,
-        key: &str,
-    ) -> Result<Option<T>> {
-        self.data
-            .db
-            .state(self.guild_id.get(), self.rule.id(), user.get(), key)
-            .await
-    }
-
-    pub async fn set_state<T: serde::Serialize>(
-        &self,
-        user: UserId,
-        key: &str,
-        v: &T,
-    ) -> Result<()> {
-        self.data
-            .db
-            .set_state(self.guild_id.get(), self.rule.id(), user.get(), key, v)
-            .await
-    }
-
-    pub async fn clear_state(&self, user: UserId) -> Result<()> {
-        self.data
-            .db
-            .clear_state(self.guild_id.get(), self.rule.id(), Some(user.get()))
-            .await
-    }
 }
 
 /// Problems that stop `rule` going live (missing capabilities).
@@ -216,7 +241,7 @@ pub fn missing_requirements(data: &Data, rule: &dyn Rule) -> Vec<String> {
                 "`{}` needs the Whisper model, which isn't loaded (check WHISPER_MODEL)",
                 rule.id()
             )),
-            Need::Jev if data.jev.is_none() => out.push(format!(
+            Need::Jev if data.judge.is_none() => out.push(format!(
                 "`{}` needs `JEV_API_KEY` set on the bot",
                 rule.id()
             )),
